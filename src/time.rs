@@ -30,7 +30,10 @@ impl Clock {
     }
 
     pub fn new(tz: TimeZone) -> Clock {
-        let name = tz.iana_name().map(str::to_owned).unwrap_or_else(|| "local".to_owned());
+        let name = tz
+            .iana_name()
+            .map(str::to_owned)
+            .unwrap_or_else(|| "local".to_owned());
         // 1970 .. 2100 covers any commit date worth plotting.
         let first = Timestamp::from_second(0).expect("epoch");
         let last = 4_102_444_800;
@@ -44,7 +47,11 @@ impl Clock {
             starts.push(at);
             offsets.push(tr.offset().seconds());
         }
-        Clock { starts, offsets, name }
+        Clock {
+            starts,
+            offsets,
+            name,
+        }
     }
 
     /// Seconds east of UTC at instant `t`.
@@ -140,7 +147,9 @@ pub fn add_months(day: i64, months: i32) -> i64 {
     days_from_civil(ny, nm, d.min(days_in_month(ny, nm)))
 }
 
-const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const MONTHS: [&str; 12] = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
 
 pub fn month_name(m: u32) -> &'static str {
     MONTHS[(m as usize - 1) % 12]
@@ -161,8 +170,16 @@ pub enum Preset {
 }
 
 impl Preset {
-    pub const ALL: [Preset; 8] =
-        [Preset::D1, Preset::D5, Preset::M1, Preset::M6, Preset::Ytd, Preset::Y1, Preset::Y5, Preset::All];
+    pub const ALL: [Preset; 8] = [
+        Preset::D1,
+        Preset::D5,
+        Preset::M1,
+        Preset::M6,
+        Preset::Ytd,
+        Preset::Y1,
+        Preset::Y5,
+        Preset::All,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -198,7 +215,13 @@ pub struct Bounds {
 
 impl Window {
     fn of(clock: &Clock, preset: Preset, first_day: i64, last_day: i64) -> Window {
-        Window { preset, first_day, last_day, start: clock.day_start(first_day), end: clock.day_start(last_day + 1) }
+        Window {
+            preset,
+            first_day,
+            last_day,
+            start: clock.day_start(first_day),
+            end: clock.day_start(last_day + 1),
+        }
     }
 
     /// The window for `preset` ending on `anchor` (a local day: normally the
@@ -222,8 +245,14 @@ impl Window {
     pub fn shifted(&self, clock: &Clock, dir: i32, bounds: Bounds) -> Option<Window> {
         let (first, last) = match self.preset {
             Preset::All => return None,
-            Preset::D1 => (self.first_day + i64::from(dir), self.last_day + i64::from(dir)),
-            Preset::D5 => (self.first_day + 5 * i64::from(dir), self.last_day + 5 * i64::from(dir)),
+            Preset::D1 => (
+                self.first_day + i64::from(dir),
+                self.last_day + i64::from(dir),
+            ),
+            Preset::D5 => (
+                self.first_day + 5 * i64::from(dir),
+                self.last_day + 5 * i64::from(dir),
+            ),
             Preset::Ytd => {
                 // Stepping from "year to date" walks whole calendar years.
                 let y = civil_from_days(self.first_day).0 + dir;
@@ -266,7 +295,11 @@ impl Window {
         } else if y1 == y2 {
             format!("{} {d1} – {} {d2}, {y2}", month_name(m1), month_name(m2))
         } else {
-            format!("{} {d1}, {y1} – {} {d2}, {y2}", month_name(m1), month_name(m2))
+            format!(
+                "{} {d1}, {y1} – {} {d2}, {y2}",
+                month_name(m1),
+                month_name(m2)
+            )
         }
     }
 }
@@ -312,7 +345,14 @@ impl Buckets {
             _ if w.days() <= 190 => Bucket::Day,
             _ => Bucket::Month,
         };
-        let ladder = [Bucket::Hour, Bucket::Day, Bucket::Week, Bucket::Month, Bucket::Quarter, Bucket::Year];
+        let ladder = [
+            Bucket::Hour,
+            Bucket::Day,
+            Bucket::Week,
+            Bucket::Month,
+            Bucket::Quarter,
+            Bucket::Year,
+        ];
         let mut last = None;
         for b in ladder.into_iter().filter(|b| *b >= finest) {
             let built = Buckets::build(clock, w, b);
@@ -444,7 +484,10 @@ mod tests {
         assert_eq!(denver.day_start(d + 1) - denver.day_start(d), 25 * 3600);
         // Half-hour zone.
         let kolkata = Clock::named("Asia/Kolkata").unwrap();
-        assert_eq!(kolkata.day_start(days_from_civil(2026, 1, 1)), ts("2025-12-31T18:30:00Z"));
+        assert_eq!(
+            kolkata.day_start(days_from_civil(2026, 1, 1)),
+            ts("2025-12-31T18:30:00Z")
+        );
         // Every instant of a day maps back to that day.
         for clock in [&denver, &kolkata] {
             for day in days_from_civil(2026, 3, 1)..days_from_civil(2026, 3, 20) {
@@ -467,7 +510,10 @@ mod tests {
     }
 
     fn bounds() -> Bounds {
-        Bounds { first_day: days_from_civil(2005, 4, 16), last_day: days_from_civil(2026, 11, 12) }
+        Bounds {
+            first_day: days_from_civil(2005, 4, 16),
+            last_day: days_from_civil(2026, 11, 12),
+        }
     }
 
     #[test]
@@ -476,27 +522,54 @@ mod tests {
         let anchor = days_from_civil(2026, 11, 12);
         let w = Window::ending(&clock, Preset::D1, anchor, bounds());
         assert_eq!(w.label(), "Nov 12, 2026");
-        assert_eq!((w.start, w.end), (ts("2026-11-12T07:00:00Z"), ts("2026-11-13T07:00:00Z")));
+        assert_eq!(
+            (w.start, w.end),
+            (ts("2026-11-12T07:00:00Z"), ts("2026-11-13T07:00:00Z"))
+        );
 
         let w = Window::ending(&clock, Preset::M1, anchor, bounds());
         assert_eq!(w.label(), "Oct 13 – Nov 12, 2026");
         // Crosses the Nov 1 DST change: start is in MDT (-6), end in MST (-7).
-        assert_eq!((w.start, w.end), (ts("2026-10-13T06:00:00Z"), ts("2026-11-13T07:00:00Z")));
+        assert_eq!(
+            (w.start, w.end),
+            (ts("2026-10-13T06:00:00Z"), ts("2026-11-13T07:00:00Z"))
+        );
 
-        assert_eq!(Window::ending(&clock, Preset::D5, anchor, bounds()).label(), "Nov 8 – Nov 12, 2026");
-        assert_eq!(Window::ending(&clock, Preset::Ytd, anchor, bounds()).label(), "Jan 1 – Nov 12, 2026");
-        assert_eq!(Window::ending(&clock, Preset::Y1, anchor, bounds()).label(), "Nov 13, 2025 – Nov 12, 2026");
-        assert_eq!(Window::ending(&clock, Preset::All, anchor, bounds()).label(), "Apr 16, 2005 – Nov 12, 2026");
+        assert_eq!(
+            Window::ending(&clock, Preset::D5, anchor, bounds()).label(),
+            "Nov 8 – Nov 12, 2026"
+        );
+        assert_eq!(
+            Window::ending(&clock, Preset::Ytd, anchor, bounds()).label(),
+            "Jan 1 – Nov 12, 2026"
+        );
+        assert_eq!(
+            Window::ending(&clock, Preset::Y1, anchor, bounds()).label(),
+            "Nov 13, 2025 – Nov 12, 2026"
+        );
+        assert_eq!(
+            Window::ending(&clock, Preset::All, anchor, bounds()).label(),
+            "Apr 16, 2005 – Nov 12, 2026"
+        );
     }
 
     #[test]
     fn stepping_tiles_without_gaps_or_overlap() {
         let clock = Clock::named("Europe/Zurich").unwrap();
-        for preset in [Preset::D1, Preset::D5, Preset::M1, Preset::M6, Preset::Y1, Preset::Y5] {
+        for preset in [
+            Preset::D1,
+            Preset::D5,
+            Preset::M1,
+            Preset::M6,
+            Preset::Y1,
+            Preset::Y5,
+        ] {
             // Start on a month end to exercise clamping.
             let mut w = Window::ending(&clock, preset, days_from_civil(2026, 3, 31), bounds());
             for _ in 0..8 {
-                let Some(prev) = w.shifted(&clock, -1, bounds()) else { break };
+                let Some(prev) = w.shifted(&clock, -1, bounds()) else {
+                    break;
+                };
                 assert_eq!(prev.last_day + 1, w.first_day, "{preset:?}");
                 assert_eq!(prev.end, w.start, "{preset:?}");
                 let back = prev.shifted(&clock, 1, bounds()).unwrap();
@@ -506,7 +579,10 @@ mod tests {
         }
         let w = Window::ending(&clock, Preset::M1, days_from_civil(2026, 3, 31), bounds());
         assert_eq!(w.label(), "Mar 1 – Mar 31, 2026");
-        assert_eq!(w.shifted(&clock, -1, bounds()).unwrap().label(), "Feb 1 – Feb 28, 2026");
+        assert_eq!(
+            w.shifted(&clock, -1, bounds()).unwrap().label(),
+            "Feb 1 – Feb 28, 2026"
+        );
     }
 
     #[test]
@@ -514,8 +590,15 @@ mod tests {
         let clock = Clock::named("UTC").unwrap();
         let anchor = days_from_civil(2026, 11, 12);
         let ytd = Window::ending(&clock, Preset::Ytd, anchor, bounds());
-        assert_eq!(ytd.shifted(&clock, -1, bounds()).unwrap().label(), "Jan 1 – Dec 31, 2025");
-        assert!(Window::ending(&clock, Preset::All, anchor, bounds()).shifted(&clock, -1, bounds()).is_none());
+        assert_eq!(
+            ytd.shifted(&clock, -1, bounds()).unwrap().label(),
+            "Jan 1 – Dec 31, 2025"
+        );
+        assert!(
+            Window::ending(&clock, Preset::All, anchor, bounds())
+                .shifted(&clock, -1, bounds())
+                .is_none()
+        );
         // Cannot step past the repository's span.
         let d1 = Window::ending(&clock, Preset::D1, anchor, bounds());
         assert!(d1.shifted(&clock, 1, bounds()).is_none());
@@ -538,7 +621,10 @@ mod tests {
         assert_eq!(b.label(&clock, 1), "Dec 2025");
         assert_eq!(b.edges[1], ts("2025-12-01T07:00:00Z"));
         // New Year's Eve 23:30 local stays in December even though UTC is January.
-        assert_eq!(b.label(&clock, b.index(ts("2026-01-01T06:30:00Z"))), "Dec 2025");
+        assert_eq!(
+            b.label(&clock, b.index(ts("2026-01-01T06:30:00Z"))),
+            "Dec 2025"
+        );
 
         let m = Window::ending(&clock, Preset::M1, anchor, bounds());
         let b = Buckets::build(&clock, &m, Bucket::Day);

@@ -60,7 +60,11 @@ fn parse_sig(line: &[u8]) -> Option<(String, i64, i16)> {
     let tz: i32 = std::str::from_utf8(tz).ok()?.parse().unwrap_or(0);
     let minutes = (tz.abs() / 100) * 60 + tz.abs() % 100;
     let minutes = if tz < 0 { -minutes } else { minutes };
-    Some((String::from_utf8_lossy(ident).into_owned(), time, minutes.clamp(-1440, 1440) as i16))
+    Some((
+        String::from_utf8_lossy(ident).into_owned(),
+        time,
+        minutes.clamp(-1440, 1440) as i16,
+    ))
 }
 
 fn parse_commit(oid: ObjectId, data: &[u8]) -> Option<RawCommit> {
@@ -93,18 +97,42 @@ fn parse_commit(oid: ObjectId, data: &[u8]) -> Option<RawCommit> {
     let msg = rest;
     let start = msg.iter().position(|b| *b != b'\n').unwrap_or(msg.len());
     let msg = &msg[start..];
-    let end = msg.windows(2).position(|w| w == b"\n\n").unwrap_or(msg.len());
-    let subject = String::from_utf8_lossy(&msg[..end]).trim_end().replace('\n', " ");
+    let end = msg
+        .windows(2)
+        .position(|w| w == b"\n\n")
+        .unwrap_or(msg.len());
+    let subject = String::from_utf8_lossy(&msg[..end])
+        .trim_end()
+        .replace('\n', " ");
 
     let (author, author_time, author_tz) = author.unwrap_or_default();
-    let (committer, commit_time, _) = committer.unwrap_or_else(|| (author.clone(), author_time, author_tz));
-    Some(RawCommit { oid, tree: tree?, parents, author, committer, author_time, author_tz, commit_time, subject })
+    let (committer, commit_time, _) =
+        committer.unwrap_or_else(|| (author.clone(), author_time, author_tz));
+    Some(RawCommit {
+        oid,
+        tree: tree?,
+        parents,
+        author,
+        committer,
+        author_time,
+        author_tz,
+        commit_time,
+        subject,
+    })
+}
+
+/// (author time, commit time) of a raw commit object.
+pub fn commit_times(data: &[u8]) -> Option<(i64, i64)> {
+    let c = parse_commit(ObjectId::null(gix::hash::Kind::Sha1), data)?;
+    Some((c.author_time, c.commit_time))
 }
 
 /// Everything in a commit message after its subject paragraph.
 pub fn message_body(data: &[u8]) -> String {
     let text = String::from_utf8_lossy(data);
-    let Some((_, message)) = text.split_once("\n\n") else { return String::new() };
+    let Some((_, message)) = text.split_once("\n\n") else {
+        return String::new();
+    };
     match message.trim_start_matches('\n').split_once("\n\n") {
         Some((_, body)) => body.trim().to_owned(),
         None => String::new(),
@@ -127,12 +155,19 @@ struct WalkShared<'a> {
 impl WalkShared<'_> {
     /// True the first time an id is offered.
     fn claim(&self, id: &ObjectId) -> bool {
-        self.seen[id.as_bytes()[0] as usize].lock().expect("poisoned").insert(*id)
+        self.seen[id.as_bytes()[0] as usize]
+            .lock()
+            .expect("poisoned")
+            .insert(*id)
     }
 
     fn visit<'s>(&'s self, mut id: ObjectId, scope: &rayon::Scope<'s>) {
         let cell = self.workers.get_or(|| {
-            RefCell::new(Worker { repo: self.repo.to_thread_local(), buf: Vec::new(), out: Vec::new() })
+            RefCell::new(Worker {
+                repo: self.repo.to_thread_local(),
+                buf: Vec::new(),
+                out: Vec::new(),
+            })
         });
         // Follow the first-parent chain inline; hand side branches to other cores.
         loop {
@@ -143,11 +178,15 @@ impl WalkShared<'_> {
                 let mut w = cell.borrow_mut();
                 let Worker { repo, buf, out } = &mut *w;
                 // A missing object is the edge of a shallow clone: stop quietly.
-                let Ok(Some(data)) = repo.objects.try_find(&id, buf) else { return };
+                let Ok(Some(data)) = repo.objects.try_find(&id, buf) else {
+                    return;
+                };
                 if data.kind != gix::object::Kind::Commit {
                     return;
                 }
-                let Some(commit) = parse_commit(id, data.data) else { return };
+                let Some(commit) = parse_commit(id, data.data) else {
+                    return;
+                };
                 let mut next = None;
                 for p in &commit.parents {
                     if self.claim(p) {
@@ -172,7 +211,11 @@ impl WalkShared<'_> {
 }
 
 /// Every commit reachable from `tips`, in no particular order.
-pub fn walk(repo: &gix::ThreadSafeRepository, tips: &[ObjectId], progress: &Progress) -> Vec<RawCommit> {
+pub fn walk(
+    repo: &gix::ThreadSafeRepository,
+    tips: &[ObjectId],
+    progress: &Progress,
+) -> Vec<RawCommit> {
     let mut shared = WalkShared {
         repo,
         seen: (0..256).map(|_| Mutex::new(HashSet::new())).collect(),
@@ -222,7 +265,11 @@ pub struct DiffChunk {
 
 impl DiffChunk {
     pub fn path(&self, i: usize) -> &[u8] {
-        let start = if i == 0 { 0 } else { self.path_ends[i - 1] as usize };
+        let start = if i == 0 {
+            0
+        } else {
+            self.path_ends[i - 1] as usize
+        };
         &self.arena[start..self.path_ends[i] as usize]
     }
 }
@@ -236,12 +283,18 @@ struct Entry<'a> {
 fn next_entry<'a>(data: &mut &'a [u8]) -> Option<Entry<'a>> {
     let d = *data;
     let sp = d.iter().position(|b| *b == b' ')?;
-    let mode = d[..sp].iter().fold(0u32, |m, b| m * 8 + b.wrapping_sub(b'0') as u32);
+    let mode = d[..sp]
+        .iter()
+        .fold(0u32, |m, b| m * 8 + b.wrapping_sub(b'0') as u32);
     let rest = &d[sp + 1..];
     let nul = rest.iter().position(|b| *b == 0)?;
     let oid = rest.get(nul + 1..nul + 21)?;
     *data = &rest[nul + 21..];
-    Some(Entry { mode, name: &rest[..nul], oid })
+    Some(Entry {
+        mode,
+        name: &rest[..nul],
+        oid,
+    })
 }
 
 /// Git's tree order: directories sort as if their name ended in `/`.
@@ -251,7 +304,12 @@ fn cmp_entries(a: &Entry, b: &Entry) -> Cmp {
         Cmp::Equal => {}
         o => return o,
     }
-    let tail = |e: &Entry| e.name.get(n).copied().unwrap_or(if e.mode == MODE_TREE { b'/' } else { 0 });
+    let tail = |e: &Entry| {
+        e.name
+            .get(n)
+            .copied()
+            .unwrap_or(if e.mode == MODE_TREE { b'/' } else { 0 })
+    };
     tail(a).cmp(&tail(b))
 }
 
@@ -275,7 +333,10 @@ impl Differ<'_> {
         buf.clear();
         if let Some(id) = id {
             let id = ObjectId::from(id);
-            self.odb.try_find(&id, &mut buf).map_err(|e| anyhow::anyhow!("{e}"))?.context("missing tree")?;
+            self.odb
+                .try_find(&id, &mut buf)
+                .map_err(|e| anyhow::anyhow!("{e}"))?
+                .context("missing tree")?;
         }
         Ok(buf)
     }
@@ -305,7 +366,11 @@ impl Differ<'_> {
             self.path.extend_from_slice(e.name);
             self.path.push(b'/');
             let id = Some(to_oid(e.oid));
-            let res = if added { self.diff(None, id, depth + 1) } else { self.diff(id, None, depth + 1) };
+            let res = if added {
+                self.diff(None, id, depth + 1)
+            } else {
+                self.diff(id, None, depth + 1)
+            };
             self.path.truncate(len);
             res
         } else {
@@ -379,11 +444,12 @@ impl Differ<'_> {
         let mut drop = Vec::new();
         for i in from..n {
             if out.kinds[i] == KIND_ADD
-                && let Some(d) = deleted.remove(&out.new[i]) {
-                    out.kinds[i] = KIND_REN;
-                    out.old[i] = out.new[i];
-                    drop.push(d);
-                }
+                && let Some(d) = deleted.remove(&out.new[i])
+            {
+                out.kinds[i] = KIND_REN;
+                out.old[i] = out.new[i];
+                drop.push(d);
+            }
         }
         if drop.is_empty() {
             return;
@@ -393,7 +459,11 @@ impl Differ<'_> {
         let mut arena = Vec::new();
         let mut ends = Vec::new();
         let (mut kinds, mut old, mut new) = (Vec::new(), Vec::new(), Vec::new());
-        let base = if from == 0 { 0 } else { out.path_ends[from - 1] as usize };
+        let base = if from == 0 {
+            0
+        } else {
+            out.path_ends[from - 1] as usize
+        };
         for i in from..n {
             if drop.binary_search(&i).is_ok() {
                 continue;
@@ -425,7 +495,11 @@ pub struct DiffJob {
     pub parent_tree: Option<[u8; 20]>,
 }
 
-pub fn tree_diff(repo: &gix::ThreadSafeRepository, jobs: &[DiffJob], progress: &Progress) -> Vec<DiffChunk> {
+pub fn tree_diff(
+    repo: &gix::ThreadSafeRepository,
+    jobs: &[DiffJob],
+    progress: &Progress,
+) -> Vec<DiffChunk> {
     jobs.par_chunks(128)
         .map_init(
             || {
@@ -434,7 +508,12 @@ pub fn tree_diff(repo: &gix::ThreadSafeRepository, jobs: &[DiffJob], progress: &
                 r
             },
             |repo, chunk| {
-                let mut d = Differ { odb: &repo.objects, bufs: Vec::new(), path: Vec::new(), out: DiffChunk::default() };
+                let mut d = Differ {
+                    odb: &repo.objects,
+                    bufs: Vec::new(),
+                    path: Vec::new(),
+                    out: DiffChunk::default(),
+                };
                 for job in chunk {
                     if progress.cancel.load(Ordering::Relaxed) {
                         break;
@@ -455,7 +534,9 @@ pub fn tree_diff(repo: &gix::ThreadSafeRepository, jobs: &[DiffJob], progress: &
                         d.out.commits.push((job.commit, n as u32));
                     }
                 }
-                progress.diffed.fetch_add(chunk.len() as u64, Ordering::Relaxed);
+                progress
+                    .diffed
+                    .fetch_add(chunk.len() as u64, Ordering::Relaxed);
                 d.out
             },
         )
@@ -470,7 +551,11 @@ fn is_binary(d: &[u8]) -> bool {
 
 fn count_lines(d: &[u8]) -> u32 {
     let n = d.iter().filter(|b| **b == b'\n').count() as u32;
-    if d.last().is_some_and(|b| *b != b'\n') { n + 1 } else { n }
+    if d.last().is_some_and(|b| *b != b'\n') {
+        n + 1
+    } else {
+        n
+    }
 }
 
 /// Fill `added` / `removed` for every change; sets [`FLAG_BINARY`] on `kinds`
@@ -485,7 +570,11 @@ pub fn line_stats(
     progress: &Progress,
 ) {
     const CHUNK: usize = 256;
-    (kinds.par_chunks_mut(CHUNK), added.par_chunks_mut(CHUNK), removed.par_chunks_mut(CHUNK))
+    (
+        kinds.par_chunks_mut(CHUNK),
+        added.par_chunks_mut(CHUNK),
+        removed.par_chunks_mut(CHUNK),
+    )
         .into_par_iter()
         .enumerate()
         .for_each_init(
@@ -503,10 +592,24 @@ pub fn line_stats(
                     }
                     a.clear();
                     b.clear();
-                    if o != NO_OID && repo.objects.try_find(&ObjectId::from(o), a).ok().flatten().is_none() {
+                    if o != NO_OID
+                        && repo
+                            .objects
+                            .try_find(&ObjectId::from(o), a)
+                            .ok()
+                            .flatten()
+                            .is_none()
+                    {
                         continue;
                     }
-                    if n != NO_OID && repo.objects.try_find(&ObjectId::from(n), b).ok().flatten().is_none() {
+                    if n != NO_OID
+                        && repo
+                            .objects
+                            .try_find(&ObjectId::from(n), b)
+                            .ok()
+                            .flatten()
+                            .is_none()
+                    {
                         continue;
                     }
                     if is_binary(a) || is_binary(b) {
@@ -524,7 +627,9 @@ pub fn line_stats(
                         }
                     }
                 }
-                progress.lined.fetch_add(kinds.len() as u64, Ordering::Relaxed);
+                progress
+                    .lined
+                    .fetch_add(kinds.len() as u64, Ordering::Relaxed);
             },
         );
 }

@@ -6,21 +6,44 @@ frequency and work rhythm for any time range, without waiting.
 
 ![Overview](docs/screenshots/overview.png)
 
+![Lens](docs/screenshots/lens.png)
+
+## Install
+
+With Rust 1.88 or newer:
+
 ```bash
-cargo run --release -- ~/code/some-repo
+cargo install --git https://github.com/danielwanja/gitsanity
 ```
 
 ## Status: 2.0 alpha
 
-Working: Overview, Activity, Contributors, Files and Commits views; range
-presets with previous / next stepping; contributor filter; commit search;
-progressive indexing; on-disk cache.
+| View | What it shows |
+| --- | --- |
+| Overview | Totals with change against the previous period, commits over time, day grid, hot files, top contributors |
+| Activity | Lines added and removed over time, largest commits, commit types, file-change kinds, work rhythm |
+| Contributors | Everyone active in the range, with a side panel for the selected person |
+| Files | Hot files, directories, file types |
+| Commits | Searchable list with full detail: both clocks, message body, files |
+| Lens | Branches, tags and remotes; the commit graph; switch the analysis to another ref |
 
-Not ported from the Swift app yet: Lens (refs and commit graph), staleness
-and new-file tables, storage treemap, repo hygiene, report export,
-content-similarity rename detection (only exact renames are paired),
-mailmap, choosing a ref other than HEAD, incremental re-index.
-SHA-256 repositories are not supported.
+Everything follows the time range, and can be narrowed to one contributor
+(`a`) or one file or folder (`Enter` on a file, `u` to widen). When the ref
+moves (commit, pull, rebase) the open app re-reads the history by itself.
+
+```bash
+gitsanity                      # the repository you are in
+gitsanity ~/code/some-repo
+gitsanity --ref v1.2           # a branch or tag instead of HEAD
+gitsanity --tz Europe/Zurich   # show dates in another time zone
+```
+
+Press `?` in the app for the keys.
+
+Not ported from the macOS app yet: staleness and new-file tables, storage
+treemap, repo hygiene, report export, content-similarity rename detection
+(only exact renames are paired), mailmap. A moved ref triggers a full re-index
+rather than an incremental one. SHA-256 repositories are not supported.
 
 ## How it is fast
 
@@ -64,3 +87,7 @@ cargo run --release -- bench <repo> --cache
 cargo run --release -- snapshot <repo> --tab activity --range 1Y            # text
 cargo run --release -- snapshot <repo> --tab overview --html overview.html  # with colours
 ```
+
+## License
+
+MIT, see [LICENSE](LICENSE).

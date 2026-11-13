@@ -17,8 +17,16 @@ use crate::time::{Clock, Preset};
 use crate::tui::{App, Tab, ui};
 
 #[allow(clippy::too_many_arguments)]
-pub fn run(path: &Path, clock: Clock, tab: &str, range: &str, width: u16, height: u16, keys: &str, html: Option<&Path>) -> Result<()> {
-    let info = store::open(path)?;
+pub fn run(
+    info: store::RepoInfo,
+    clock: Clock,
+    tab: &str,
+    range: &str,
+    width: u16,
+    height: u16,
+    keys: &str,
+    html: Option<&Path>,
+) -> Result<()> {
     let progress = Arc::new(Progress::default());
     let (store, cached) = match store::load_cache(&info) {
         Some(s) => (Arc::new(s), true),
@@ -28,20 +36,31 @@ pub fn run(path: &Path, clock: Clock, tab: &str, range: &str, width: u16, height
             (s, false)
         }
     };
-    progress.phase.store(crate::git::PHASE_DONE, std::sync::atomic::Ordering::Relaxed);
+    progress
+        .phase
+        .store(crate::git::PHASE_DONE, std::sync::atomic::Ordering::Relaxed);
     // "Now" is the newest commit, so snapshots do not drift from day to day.
     let now = store.time.last().copied().unwrap_or(0);
     let mut app = App::new(&info, clock, now, progress);
     app.set_store(store, cached);
-    app.tab = Tab::ALL.into_iter().find(|t| t.label().eq_ignore_ascii_case(tab)).with_context(|| format!("no tab named {tab}"))?;
-    let Some(preset) = Preset::ALL.into_iter().find(|p| p.label().eq_ignore_ascii_case(range)) else { bail!("no range named {range}") };
+    app.tab = Tab::ALL
+        .into_iter()
+        .find(|t| t.label().eq_ignore_ascii_case(tab))
+        .with_context(|| format!("no tab named {tab}"))?;
+    let Some(preset) = Preset::ALL
+        .into_iter()
+        .find(|p| p.label().eq_ignore_ascii_case(range))
+    else {
+        bail!("no range named {range}")
+    };
     app.set_preset(preset);
 
     let mut terminal = Terminal::new(TestBackend::new(width, height))?;
     terminal.draw(|f| ui::draw(f, &mut app))?;
     for c in keys.chars() {
         let code = match c {
-            '\n' => KeyCode::Enter,
+            '\n' | '!' => KeyCode::Enter,
+            '~' => KeyCode::Backspace,
             '<' => KeyCode::Left,
             '>' => KeyCode::Right,
             c => KeyCode::Char(c),
@@ -51,7 +70,8 @@ pub fn run(path: &Path, clock: Clock, tab: &str, range: &str, width: u16, height
     }
     let buf = terminal.backend().buffer().clone();
     match html {
-        Some(out) => std::fs::write(out, to_html(&buf)).with_context(|| format!("writing {}", out.display()))?,
+        Some(out) => std::fs::write(out, to_html(&buf))
+            .with_context(|| format!("writing {}", out.display()))?,
         None => print!("{}", to_text(&buf)),
     }
     Ok(())

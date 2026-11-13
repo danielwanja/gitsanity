@@ -16,8 +16,10 @@ use crate::git::{self, DiffChunk, DiffJob, Progress, RawCommit};
 
 pub const NO_PARENT: u32 = u32::MAX;
 
-pub const COMMIT_TYPES: [&str; 13] =
-    ["merge", "revert", "feat", "fix", "docs", "refactor", "chore", "test", "build", "ci", "perf", "style", "other"];
+pub const COMMIT_TYPES: [&str; 13] = [
+    "merge", "revert", "feat", "fix", "docs", "refactor", "chore", "test", "build", "ci", "perf",
+    "style", "other",
+];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum Stage {
@@ -88,7 +90,11 @@ impl Store {
     }
 
     pub fn subject(&self, i: usize) -> &str {
-        let start = if i == 0 { 0 } else { self.subj_end[i - 1] as usize };
+        let start = if i == 0 {
+            0
+        } else {
+            self.subj_end[i - 1] as usize
+        };
         &self.subjects[start..self.subj_end[i] as usize]
     }
 
@@ -108,7 +114,10 @@ impl Store {
     }
 
     pub fn short_oid(&self, i: usize) -> String {
-        self.oid[i][..4].iter().map(|b| format!("{b:02x}")).collect()
+        self.oid[i][..4]
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect()
     }
 
     pub fn hex_oid(&self, i: usize) -> String {
@@ -123,7 +132,10 @@ impl Store {
 
 fn split_ident(ident: &str) -> (&str, &str) {
     match ident.rfind('<') {
-        Some(lt) => (ident[..lt].trim(), ident[lt + 1..].trim_end_matches('>').trim()),
+        Some(lt) => (
+            ident[..lt].trim(),
+            ident[lt + 1..].trim_end_matches('>').trim(),
+        ),
         None => (ident.trim(), ""),
     }
 }
@@ -132,15 +144,21 @@ fn classify(subject: &str, merge: bool) -> u8 {
     if merge {
         return 0;
     }
-    let lower = subject.as_bytes().iter().take(12).map(u8::to_ascii_lowercase).collect::<Vec<_>>();
+    let lower = subject
+        .as_bytes()
+        .iter()
+        .take(12)
+        .map(u8::to_ascii_lowercase)
+        .collect::<Vec<_>>();
     if lower.starts_with(b"revert") {
         return 1;
     }
     for (i, name) in COMMIT_TYPES.iter().enumerate().skip(2).take(10) {
         if let Some(rest) = lower.strip_prefix(name.as_bytes())
-            && matches!(rest.first(), Some(b':' | b'(' | b'!')) {
-                return i as u8;
-            }
+            && matches!(rest.first(), Some(b':' | b'(' | b'!'))
+        {
+            return i as u8;
+        }
     }
     12
 }
@@ -198,7 +216,11 @@ impl Interner {
 }
 
 /// The result of the commit walk, plus the tree-diff work list derived from it.
-pub fn from_commits(mut raw: Vec<RawCommit>, head: ObjectId, ref_name: String) -> (Store, Vec<DiffJob>) {
+pub fn from_commits(
+    mut raw: Vec<RawCommit>,
+    head: ObjectId,
+    ref_name: String,
+) -> (Store, Vec<DiffJob>) {
     // The author date drives every chart, and it is whatever the author's clock
     // said. The kernel has commits "authored" in 1970, 1996 and 2085. A date is
     // treated as broken, and replaced by the commit date, when it is later than
@@ -215,7 +237,11 @@ pub fn from_commits(mut raw: Vec<RawCommit>, head: ObjectId, ref_name: String) -
     raw.sort_unstable_by_key(|a| (a.author_time, a.oid));
 
     let n = raw.len();
-    let index: HashMap<ObjectId, u32> = raw.iter().enumerate().map(|(i, c)| (c.oid, i as u32)).collect();
+    let index: HashMap<ObjectId, u32> = raw
+        .iter()
+        .enumerate()
+        .map(|(i, c)| (c.oid, i as u32))
+        .collect();
 
     // One person per email address (case-insensitive). Their display name is
     // the spelling they used most often, so a one-off typo does not win.
@@ -228,13 +254,21 @@ pub fn from_commits(mut raw: Vec<RawCommit>, head: ObjectId, ref_name: String) -
             return *id;
         }
         let (name, email) = split_ident(ident);
-        let key = if email.is_empty() { name.to_lowercase() } else { email.to_lowercase() };
+        let key = if email.is_empty() {
+            name.to_lowercase()
+        } else {
+            email.to_lowercase()
+        };
         let id = *by_email.entry(key).or_insert_with(|| {
             let lower = format!("{name} {email}").to_lowercase();
             // GitHub's private "users.noreply.github.com" addresses belong to people,
             // so "noreply" alone says nothing; only an explicit bot marker counts.
             let is_bot = lower.contains("[bot]") || lower.contains("bot@");
-            people.push(Person { name: name.to_owned(), email: email.to_owned(), is_bot });
+            people.push(Person {
+                name: name.to_owned(),
+                email: email.to_owned(),
+                is_bot,
+            });
             people.len() as u32 - 1
         });
         by_ident.insert(ident.to_owned(), (id, 1));
@@ -283,7 +317,11 @@ pub fn from_commits(mut raw: Vec<RawCommit>, head: ObjectId, ref_name: String) -
         s.subjects.push_str(&c.subject);
         s.subj_end.push(s.subjects.len() as u32);
         s.par_start.push(s.parents.len() as u32);
-        s.parents.extend(c.parents.iter().map(|p| index.get(p).copied().unwrap_or(NO_PARENT)));
+        s.parents.extend(
+            c.parents
+                .iter()
+                .map(|p| index.get(p).copied().unwrap_or(NO_PARENT)),
+        );
     }
     // Diff jobs run along first-parent chains (newest first), not in time order:
     // a commit's parent tree is the next job's own tree, so the object cache
@@ -298,10 +336,16 @@ pub fn from_commits(mut raw: Vec<RawCommit>, head: ObjectId, ref_name: String) -
             let first_parent = raw[i].parents.first().map(|p| index.get(p).copied());
             if raw[i].parents.len() <= 1 {
                 match first_parent {
-                    None => jobs.push(DiffJob { commit: i as u32, tree: tree(i), parent_tree: None }),
-                    Some(Some(p)) => {
-                        jobs.push(DiffJob { commit: i as u32, tree: tree(i), parent_tree: Some(tree(p as usize)) })
-                    }
+                    None => jobs.push(DiffJob {
+                        commit: i as u32,
+                        tree: tree(i),
+                        parent_tree: None,
+                    }),
+                    Some(Some(p)) => jobs.push(DiffJob {
+                        commit: i as u32,
+                        tree: tree(i),
+                        parent_tree: Some(tree(p as usize)),
+                    }),
                     Some(None) => {} // parent outside a shallow clone: nothing to compare with
                 }
             }
@@ -448,24 +492,170 @@ pub struct Timings {
     pub lines: f64,
 }
 
+#[derive(Clone)]
 pub struct RepoInfo {
     pub repo: gix::ThreadSafeRepository,
     pub git_dir: PathBuf,
     pub workdir: PathBuf,
+    /// Full name of the ref being analysed (`refs/heads/main`), or None for HEAD.
+    pub spec: Option<String>,
     pub head: ObjectId,
     pub ref_name: String,
 }
 
-pub fn open(path: &Path) -> Result<RepoInfo> {
-    let repo = gix::discover(path).with_context(|| format!("{} is not inside a git repository", path.display()))?;
-    let head = repo.head_id().context("repository has no commits yet")?.detach();
-    let ref_name = match repo.head_name()? {
-        Some(name) => name.shorten().to_string(),
-        None => format!("detached at {}", &head.to_hex().to_string()[..8]),
+/// The commit a ref (or HEAD) points at right now, and how to label it.
+fn resolve(repo: &gix::Repository, spec: Option<&str>) -> Result<(ObjectId, String)> {
+    match spec {
+        Some(name) => {
+            let mut reference = repo
+                .find_reference(name)
+                .with_context(|| format!("no ref named {name}"))?;
+            let id = reference
+                .peel_to_id()
+                .with_context(|| format!("{name} does not point at a commit"))?
+                .detach();
+            Ok((id, reference.name().shorten().to_string()))
+        }
+        None => {
+            let head = repo
+                .head_id()
+                .context("repository has no commits yet")?
+                .detach();
+            let label = match repo.head_name()? {
+                Some(name) => name.shorten().to_string(),
+                None => format!("detached at {}", &head.to_hex().to_string()[..8]),
+            };
+            Ok((head, label))
+        }
+    }
+}
+
+/// Open the repository containing `path`, looking at `spec` (default: HEAD).
+pub fn open(path: &Path, spec: Option<&str>) -> Result<RepoInfo> {
+    let repo = gix::discover(path)
+        .with_context(|| format!("{} is not inside a git repository", path.display()))?;
+    let (head, ref_name) = resolve(&repo, spec)?;
+    // Absolute paths: `gitsanity .` must show the folder's real name, and the
+    // cache key must not depend on where the command was run from.
+    let absolute = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_owned());
+    let git_dir = absolute(repo.git_dir());
+    let workdir = repo
+        .workdir()
+        .map(absolute)
+        .unwrap_or_else(|| git_dir.clone());
+    Ok(RepoInfo {
+        repo: repo.into_sync(),
+        git_dir,
+        workdir,
+        spec: spec.map(str::to_owned),
+        head,
+        ref_name,
+    })
+}
+
+impl RepoInfo {
+    /// Where the ref points now; differs from `head` once someone commits or pulls.
+    pub fn current_tip(&self) -> Option<ObjectId> {
+        resolve(&self.repo.to_thread_local(), self.spec.as_deref())
+            .ok()
+            .map(|(id, _)| id)
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum RefKind {
+    Branch,
+    Tag,
+    Remote,
+}
+
+#[derive(Clone)]
+pub struct RefRow {
+    pub kind: RefKind,
+    /// Short name (`main`, `v1.2`, `origin/main`) and the full one to switch to.
+    pub name: String,
+    pub full_name: String,
+    pub oid: [u8; 20],
+    /// Author time of the commit it points at (how the store orders commits)...
+    pub author_time: i64,
+    /// ...and its commit time, which is what "last activity" means for a ref.
+    pub time: i64,
+}
+
+/// Branches, tags and remote branches that point at a commit, newest first.
+pub fn list_refs(repo: &gix::Repository) -> Vec<RefRow> {
+    use gix::objs::Find;
+    use gix::refs::Category;
+    let mut rows = Vec::new();
+    let Ok(platform) = repo.references() else {
+        return rows;
     };
-    let git_dir = repo.git_dir().to_owned();
-    let workdir = repo.workdir().map(Path::to_owned).unwrap_or_else(|| git_dir.clone());
-    Ok(RepoInfo { repo: repo.into_sync(), git_dir, workdir, head, ref_name })
+    let Ok(all) = platform.all() else { return rows };
+    let mut buf = Vec::new();
+    for mut reference in all.flatten() {
+        let kind = match reference.name().category() {
+            Some(Category::LocalBranch) => RefKind::Branch,
+            Some(Category::Tag) => RefKind::Tag,
+            Some(Category::RemoteBranch) => RefKind::Remote,
+            _ => continue,
+        };
+        // Names are read before peeling: peeling a symbolic ref (origin/HEAD)
+        // would report its target's name and list that branch twice.
+        let (name, full_name) = (
+            reference.name().shorten().to_string(),
+            reference.name().as_bstr().to_string(),
+        );
+        if name.ends_with("/HEAD") {
+            continue;
+        }
+        let Ok(id) = reference.peel_to_id() else {
+            continue;
+        };
+        let id = id.detach();
+        // Tags can point at trees or blobs; only commits are of interest here.
+        let Ok(Some(data)) = repo.objects.try_find(&id, &mut buf) else {
+            continue;
+        };
+        if data.kind != gix::object::Kind::Commit {
+            continue;
+        }
+        let Some((author_time, time)) = git::commit_times(data.data) else {
+            continue;
+        };
+        rows.push(RefRow {
+            kind,
+            name,
+            full_name,
+            oid: id.as_bytes().try_into().expect("sha1"),
+            author_time,
+            time,
+        });
+    }
+    rows.sort_by(|a, b| b.time.cmp(&a.time).then_with(|| a.name.cmp(&b.name)));
+    rows
+}
+
+impl Store {
+    /// Index of the commit with this id, given its author time. (Commits are
+    /// sorted by time, so this is a binary search plus a short scan.)
+    pub fn find(&self, oid: &[u8; 20], author_time: i64) -> Option<usize> {
+        self.range(author_time, author_time + 1)
+            .find(|i| &self.oid[*i] == oid)
+            .or_else(|| {
+                // The author date was repaired at index time; fall back to the commit date order.
+                self.oid.iter().position(|o| o == oid)
+            })
+    }
+}
+
+#[cfg(test)]
+pub fn empty() -> Store {
+    from_commits(
+        Vec::new(),
+        ObjectId::null(gix::hash::Kind::Sha1),
+        String::new(),
+    )
+    .0
 }
 
 /// Run the three passes, handing each finished stage to `publish` so a UI can
@@ -487,7 +677,9 @@ pub fn index(
     let mut store = store;
 
     let t = Instant::now();
-    progress.diff_total.store(jobs.len() as u64, Ordering::Relaxed);
+    progress
+        .diff_total
+        .store(jobs.len() as u64, Ordering::Relaxed);
     progress.phase.store(git::PHASE_DIFF, Ordering::Relaxed);
     let chunks = git::tree_diff(&info.repo, &jobs, progress);
     let diff = t.elapsed().as_secs_f64();
@@ -499,32 +691,66 @@ pub fn index(
 
     let t = Instant::now();
     if with_lines {
-        progress.line_total.store(blobs.old.len() as u64, Ordering::Relaxed);
+        progress
+            .line_total
+            .store(blobs.old.len() as u64, Ordering::Relaxed);
         progress.phase.store(git::PHASE_LINES, Ordering::Relaxed);
         publish(Arc::new(store.clone()));
         let (mut added, mut removed) = (vec![0u32; blobs.old.len()], vec![0u32; blobs.old.len()]);
-        let ChangeBlobs { old, new, kinds, .. } = &mut blobs;
-        git::line_stats(&info.repo, old, new, kinds, &mut added, &mut removed, progress);
+        let ChangeBlobs {
+            old, new, kinds, ..
+        } = &mut blobs;
+        git::line_stats(
+            &info.repo,
+            old,
+            new,
+            kinds,
+            &mut added,
+            &mut removed,
+            progress,
+        );
         store.apply_lines(&blobs, &added, &removed);
     }
     let lines = t.elapsed().as_secs_f64();
     let store = Arc::new(store);
     progress.phase.store(git::PHASE_DONE, Ordering::Relaxed);
     publish(store.clone());
-    Ok((store, Timings { walk, build, diff, merge, lines }))
+    Ok((
+        store,
+        Timings {
+            walk,
+            build,
+            diff,
+            merge,
+            lines,
+        },
+    ))
 }
 
 // --------------------------------------------------------------------- cache
 
 fn cache_path(info: &RepoInfo) -> Option<PathBuf> {
     use etcetera::BaseStrategy;
-    let base = etcetera::choose_base_strategy().ok()?.cache_dir().join("gitsanity");
+    let base = etcetera::choose_base_strategy()
+        .ok()?
+        .cache_dir()
+        .join("gitsanity");
     // FNV-1a of the git dir: stable, and no path characters to escape.
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    for b in info.git_dir.to_string_lossy().bytes() {
+    // One cache file per repository and ref, so switching refs keeps both.
+    for b in info
+        .git_dir
+        .to_string_lossy()
+        .bytes()
+        .chain(info.spec.as_deref().unwrap_or("HEAD").bytes())
+    {
         h = (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3);
     }
-    let name = info.workdir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let name = info
+        .workdir
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
     Some(base.join(format!("{name}-{h:016x}.gsx")))
 }
 
@@ -532,8 +758,10 @@ fn cache_path(info: &RepoInfo) -> Option<PathBuf> {
 pub fn load_cache(info: &RepoInfo) -> Option<Store> {
     let file = std::fs::File::open(cache_path(info)?).ok()?;
     let reader = zstd::Decoder::new(file).ok()?;
-    let store: Store = bincode::deserialize_from(std::io::BufReader::with_capacity(1 << 20, reader)).ok()?;
-    (store.version == VERSION && store.head == info.head.as_bytes() && store.stage == Stage::Lines).then_some(store)
+    let store: Store =
+        bincode::deserialize_from(std::io::BufReader::with_capacity(1 << 20, reader)).ok()?;
+    (store.version == VERSION && store.head == info.head.as_bytes() && store.stage == Stage::Lines)
+        .then_some(store)
 }
 
 pub fn save_cache(info: &RepoInfo, store: &Store) -> Result<PathBuf> {
@@ -560,7 +788,14 @@ mod tests {
     fn git(dir: &Path, date: &str, args: &[&str]) {
         let out = Command::new("git")
             .current_dir(dir)
-            .args(["-c", "user.name=Ada", "-c", "user.email=ada@example.com", "-c", "commit.gpgsign=false"])
+            .args([
+                "-c",
+                "user.name=Ada",
+                "-c",
+                "user.email=ada@example.com",
+                "-c",
+                "commit.gpgsign=false",
+            ])
             .args(args)
             .env("GIT_AUTHOR_DATE", date)
             .env("GIT_COMMITTER_DATE", date)
@@ -568,7 +803,11 @@ mod tests {
             .env("GIT_CONFIG_SYSTEM", "/dev/null")
             .output()
             .expect("git is installed");
-        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
     }
 
     /// Five commits, one of them a merge, with a rename, a deletion and a binary file.
@@ -580,28 +819,59 @@ mod tests {
         std::fs::write(d.join("src/a.rs"), "one\ntwo\nthree\n").unwrap();
         std::fs::write(d.join("notes.md"), "hello\n").unwrap();
         git(d, "2026-03-07T23:30:00-07:00", &["add", "."]);
-        git(d, "2026-03-07T23:30:00-07:00", &["commit", "-q", "-m", "feat: first"]);
+        git(
+            d,
+            "2026-03-07T23:30:00-07:00",
+            &["commit", "-q", "-m", "feat: first"],
+        );
 
         // 00:30 in Tokyo on Mar 9 is still Mar 8 in Denver (and in UTC).
         std::fs::write(d.join("src/a.rs"), "one\n2\nthree\nfour\n").unwrap();
         std::fs::write(d.join("logo.bin"), [0u8, 1, 2, 3]).unwrap();
         git(d, "2026-03-09T00:30:00+09:00", &["add", "."]);
-        git(d, "2026-03-09T00:30:00+09:00", &["commit", "-q", "-m", "fix(parser): second\n\nbody text"]);
+        git(
+            d,
+            "2026-03-09T00:30:00+09:00",
+            &["commit", "-q", "-m", "fix(parser): second\n\nbody text"],
+        );
 
         git(d, "", &["checkout", "-q", "-b", "side"]);
-        git(d, "2026-03-10T09:00:00-06:00", &["mv", "notes.md", "README.md"]);
-        git(d, "2026-03-10T09:00:00-06:00", &["commit", "-q", "-m", "docs: rename notes"]);
+        git(
+            d,
+            "2026-03-10T09:00:00-06:00",
+            &["mv", "notes.md", "README.md"],
+        );
+        git(
+            d,
+            "2026-03-10T09:00:00-06:00",
+            &["commit", "-q", "-m", "docs: rename notes"],
+        );
         git(d, "", &["checkout", "-q", "main"]);
         git(d, "2026-03-10T10:00:00-06:00", &["rm", "-q", "logo.bin"]);
-        git(d, "2026-03-10T10:00:00-06:00", &["commit", "-q", "-m", "remove logo"]);
-        git(d, "2026-03-11T12:00:00-06:00", &["merge", "-q", "--no-ff", "side", "-m", "Merge branch 'side'"]);
+        git(
+            d,
+            "2026-03-10T10:00:00-06:00",
+            &["commit", "-q", "-m", "remove logo"],
+        );
+        git(
+            d,
+            "2026-03-11T12:00:00-06:00",
+            &[
+                "merge",
+                "-q",
+                "--no-ff",
+                "side",
+                "-m",
+                "Merge branch 'side'",
+            ],
+        );
         tmp
     }
 
     #[test]
     fn indexes_a_small_repository_end_to_end() {
         let tmp = fixture();
-        let info = open(tmp.path()).unwrap();
+        let info = open(tmp.path(), None).unwrap();
         assert_eq!(info.ref_name, "main");
         let (s, _) = index(&info, &Progress::default(), true, |_| {}).unwrap();
 
@@ -610,7 +880,16 @@ mod tests {
         assert_eq!(s.people.len(), 1);
         assert_eq!(s.people[0].name, "Ada");
         let subjects: Vec<&str> = (0..5).map(|i| s.subject(i)).collect();
-        assert_eq!(subjects, ["feat: first", "fix(parser): second", "docs: rename notes", "remove logo", "Merge branch 'side'"]);
+        assert_eq!(
+            subjects,
+            [
+                "feat: first",
+                "fix(parser): second",
+                "docs: rename notes",
+                "remove logo",
+                "Merge branch 'side'"
+            ]
+        );
         let types: Vec<&str> = s.ctype.iter().map(|t| COMMIT_TYPES[*t as usize]).collect();
         assert_eq!(types, ["feat", "fix", "docs", "other", "merge"]);
         assert_eq!(s.tz, [-420, 540, -360, -360, -360]);
@@ -618,17 +897,36 @@ mod tests {
         let change = |i: usize| -> Vec<(&str, u8, u32, u32)> {
             let mut v: Vec<_> = s
                 .changes_of(i)
-                .map(|c| (s.paths[s.ch_file[c] as usize].as_str(), s.ch_kind[c], s.ch_add[c], s.ch_del[c]))
+                .map(|c| {
+                    (
+                        s.paths[s.ch_file[c] as usize].as_str(),
+                        s.ch_kind[c],
+                        s.ch_add[c],
+                        s.ch_del[c],
+                    )
+                })
                 .collect();
             v.sort();
             v
         };
-        assert_eq!(change(0), [("notes.md", KIND_ADD, 1, 0), ("src/a.rs", KIND_ADD, 3, 0)]);
-        assert_eq!(change(1), [("logo.bin", KIND_ADD | FLAG_BINARY, 0, 0), ("src/a.rs", KIND_MOD, 2, 1)]);
+        assert_eq!(
+            change(0),
+            [("notes.md", KIND_ADD, 1, 0), ("src/a.rs", KIND_ADD, 3, 0)]
+        );
+        assert_eq!(
+            change(1),
+            [
+                ("logo.bin", KIND_ADD | FLAG_BINARY, 0, 0),
+                ("src/a.rs", KIND_MOD, 2, 1)
+            ]
+        );
         assert_eq!(change(2), [("README.md", KIND_REN, 0, 0)]);
         assert_eq!(change(3), [("logo.bin", KIND_DEL | FLAG_BINARY, 0, 0)]);
         assert!(change(4).is_empty(), "merges carry no file changes");
-        assert_eq!((s.c_add.iter().sum::<u32>(), s.c_del.iter().sum::<u32>()), (6, 1));
+        assert_eq!(
+            (s.c_add.iter().sum::<u32>(), s.c_del.iter().sum::<u32>()),
+            (6, 1)
+        );
         assert_eq!(s.parents_of(4).len(), 2);
 
         // The store survives serialisation (what the on-disk cache does).
@@ -639,9 +937,56 @@ mod tests {
     }
 
     #[test]
+    fn lists_refs_and_indexes_another_branch() {
+        let tmp = fixture();
+        git(tmp.path(), "", &["tag", "v1", "side"]);
+        let info = open(tmp.path(), None).unwrap();
+        let refs = list_refs(&info.repo.to_thread_local());
+        let mut names: Vec<(&str, RefKind)> =
+            refs.iter().map(|r| (r.name.as_str(), r.kind)).collect();
+        names.sort_by_key(|n| n.0);
+        assert_eq!(
+            names,
+            [
+                ("main", RefKind::Branch),
+                ("side", RefKind::Branch),
+                ("v1", RefKind::Tag)
+            ]
+        );
+
+        // `side` stops before the logo removal and the merge.
+        let side = open(tmp.path(), Some("refs/heads/side")).unwrap();
+        assert_eq!(side.ref_name, "side");
+        let (s, _) = index(&side, &Progress::default(), true, |_| {}).unwrap();
+        let subjects: Vec<&str> = (0..s.len()).map(|i| s.subject(i)).collect();
+        assert_eq!(
+            subjects,
+            ["feat: first", "fix(parser): second", "docs: rename notes"]
+        );
+        // Every ref's commit can be located in the store it belongs to.
+        let tag = refs.iter().find(|r| r.name == "v1").unwrap();
+        assert_eq!(
+            s.find(&tag.oid, tag.author_time).map(|i| s.subject(i)),
+            Some("docs: rename notes")
+        );
+        assert!(open(tmp.path(), Some("refs/heads/nope")).is_err());
+
+        // A new commit moves the tip; that is what live refresh watches for.
+        assert_eq!(info.current_tip(), Some(info.head));
+        std::fs::write(tmp.path().join("new.txt"), "x\n").unwrap();
+        git(tmp.path(), "2026-03-12T09:00:00-06:00", &["add", "."]);
+        git(
+            tmp.path(),
+            "2026-03-12T09:00:00-06:00",
+            &["commit", "-q", "-m", "later"],
+        );
+        assert_ne!(info.current_tip(), Some(info.head));
+    }
+
+    #[test]
     fn days_follow_the_viewers_time_zone() {
         let tmp = fixture();
-        let info = open(tmp.path()).unwrap();
+        let info = open(tmp.path(), None).unwrap();
         let (s, _) = index(&info, &Progress::default(), true, |_| {}).unwrap();
         let now = *s.time.last().unwrap();
         let per_day = |zone: &str| {
@@ -652,17 +997,56 @@ mod tests {
             (w.label(), sum.daily, sum.totals.commits)
         };
         // Denver: Mar 7 (23:30), Mar 8 (the commit made in Tokyo, 08:30 local, on the DST day), Mar 10 twice, Mar 11.
-        assert_eq!(per_day("America/Denver"), ("Mar 7 – Mar 11, 2026".to_owned(), vec![1, 1, 0, 2, 1], 5));
+        assert_eq!(
+            per_day("America/Denver"),
+            ("Mar 7 – Mar 11, 2026".to_owned(), vec![1, 1, 0, 2, 1], 5)
+        );
         // In Tokyo every one of them lands a calendar day later.
-        assert_eq!(per_day("Asia/Tokyo"), ("Mar 8 – Mar 12, 2026".to_owned(), vec![1, 1, 0, 2, 1], 5));
+        assert_eq!(
+            per_day("Asia/Tokyo"),
+            ("Mar 8 – Mar 12, 2026".to_owned(), vec![1, 1, 0, 2, 1], 5)
+        );
         // UTC, which is what the old day_sk rollups used.
-        assert_eq!(per_day("UTC"), ("Mar 8 – Mar 11, 2026".to_owned(), vec![2, 0, 2, 1], 5));
+        assert_eq!(
+            per_day("UTC"),
+            ("Mar 8 – Mar 11, 2026".to_owned(), vec![2, 0, 2, 1], 5)
+        );
+
+        // A path filter narrows commits, files and line counts to that file or folder.
+        let clock = Clock::named("UTC").unwrap();
+        let bounds = query::bounds(&s, &clock, now);
+        let w = Window::ending(&clock, Preset::All, bounds.last_day, bounds);
+        let only = |path: &str| {
+            let filter = Filter {
+                author: None,
+                path: Some(path.to_owned()),
+            };
+            let sum = query::summarize(&s, &clock, &w, bounds, &filter, "", 100);
+            (
+                sum.totals.commits,
+                sum.totals.files,
+                sum.totals.added,
+                sum.totals.removed,
+            )
+        };
+        assert_eq!(only("src/"), (2, 1, 5, 1));
+        assert_eq!(only("src/a.rs"), (2, 1, 5, 1));
+        assert_eq!(only("notes.md"), (1, 1, 1, 0));
+        assert_eq!(only("missing/"), (0, 0, 0, 0));
 
         // Searching by local date finds what the user sees on that date.
         let clock = Clock::named("America/Denver").unwrap();
         let bounds = query::bounds(&s, &clock, now);
         let w = Window::ending(&clock, Preset::All, bounds.last_day, bounds);
-        let found = query::summarize(&s, &clock, &w, bounds, &Filter::default(), "2026-03-07", 100);
+        let found = query::summarize(
+            &s,
+            &clock,
+            &w,
+            bounds,
+            &Filter::default(),
+            "2026-03-07",
+            100,
+        );
         assert_eq!(found.commits.len(), 1);
         assert_eq!(s.subject(found.commits[0] as usize), "feat: first");
     }

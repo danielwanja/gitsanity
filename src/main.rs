@@ -6,6 +6,7 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 
 mod git;
+mod graph;
 mod query;
 mod snapshot;
 mod store;
@@ -13,13 +14,20 @@ mod time;
 mod tui;
 
 #[derive(Parser)]
-#[command(name = "gitsanity", version, about = "Git history analytics for the terminal")]
+#[command(
+    name = "gitsanity",
+    version,
+    about = "Git history analytics for the terminal"
+)]
 struct Cli {
     /// Repository to open (default: the current directory)
     path: Option<PathBuf>,
     /// Ignore the saved index and read the history again
     #[arg(long)]
     reindex: bool,
+    /// Analyse this branch or tag instead of HEAD (e.g. main, v1.2, origin/main)
+    #[arg(long = "ref", value_name = "REF", global = true)]
+    reference: Option<String>,
     /// Show dates in this IANA time zone instead of the system one (e.g. Europe/Zurich)
     #[arg(long, value_name = "ZONE")]
     tz: Option<String>,
@@ -45,7 +53,7 @@ enum Command {
     /// Render one screen without a terminal (plain text, or HTML with colours)
     Snapshot {
         path: PathBuf,
-        /// overview, activity, contributors, files or commits
+        /// overview, activity, contributors, files, commits or lens
         #[arg(long, default_value = "overview")]
         tab: String,
         /// 1D 5D 1M 6M YTD 1Y 5Y All
@@ -75,39 +83,79 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     let clock = clock(cli.tz.as_deref())?;
     match cli.command {
-        Some(Command::Bench { path, no_lines, cache }) => bench(&path, !no_lines, cache, &clock),
-        Some(Command::Snapshot { path, tab, range, width, height, keys, html }) => {
-            snapshot::run(&path, clock, &tab, &range, width, height, &keys, html.as_deref())
-        }
+        Some(Command::Bench {
+            path,
+            no_lines,
+            cache,
+        }) => bench(&path, !no_lines, cache, &clock),
+        Some(Command::Snapshot {
+            path,
+            tab,
+            range,
+            width,
+            height,
+            keys,
+            html,
+        }) => snapshot::run(
+            store::open(&path, cli.reference.as_deref())?,
+            clock,
+            &tab,
+            &range,
+            width,
+            height,
+            &keys,
+            html.as_deref(),
+        ),
         Some(Command::Dump { path }) => {
             use std::io::Write;
-            let info = store::open(&path)?;
+            let info = store::open(&path, None)?;
             let (s, _) = store::index(&info, &git::Progress::default(), true, |_| {})?;
             let mut out = std::io::BufWriter::new(std::io::stdout().lock());
             for i in (0..s.len()).filter(|i| !s.is_merge(*i)) {
-                writeln!(out, "{} {} {} {}", s.hex_oid(i), s.changes_of(i).len(), s.c_add[i], s.c_del[i])?;
+                writeln!(
+                    out,
+                    "{} {} {} {}",
+                    s.hex_oid(i),
+                    s.changes_of(i).len(),
+                    s.c_add[i],
+                    s.c_del[i]
+                )?;
             }
             Ok(())
         }
         None => {
             let path = cli.path.unwrap_or_else(|| PathBuf::from("."));
-            tui::run(store::open(&path)?, clock, cli.reindex)
+            tui::run(
+                store::open(&path, cli.reference.as_deref())?,
+                clock,
+                cli.reindex,
+            )
         }
     }
 }
 
 fn bench(path: &Path, lines: bool, cache: bool, clock: &time::Clock) -> Result<()> {
     let total = Instant::now();
-    let info = store::open(path)?;
+    let info = store::open(path, None)?;
     let progress = git::Progress::default();
     let mut first_stage = None;
     let (s, t) = store::index(&info, &progress, lines, |_| {
         first_stage.get_or_insert(total.elapsed().as_secs_f64());
     })?;
-    let (add, del): (u64, u64) =
-        (s.ch_add.iter().map(|v| u64::from(*v)).sum(), s.ch_del.iter().map(|v| u64::from(*v)).sum());
-    let binary = s.ch_kind.iter().filter(|k| **k & git::FLAG_BINARY != 0).count();
-    let renames = s.ch_kind.iter().filter(|k| **k & 0x7f == git::KIND_REN).count();
+    let (add, del): (u64, u64) = (
+        s.ch_add.iter().map(|v| u64::from(*v)).sum(),
+        s.ch_del.iter().map(|v| u64::from(*v)).sum(),
+    );
+    let binary = s
+        .ch_kind
+        .iter()
+        .filter(|k| **k & git::FLAG_BINARY != 0)
+        .count();
+    let renames = s
+        .ch_kind
+        .iter()
+        .filter(|k| **k & 0x7f == git::KIND_REN)
+        .count();
     println!("{} @ {}", info.workdir.display(), info.ref_name);
     println!(
         "  {} commits · {} people · {} files · {} changes (+{add} -{del}, {binary} binary, {renames} renames) · {} dates repaired",

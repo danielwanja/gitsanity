@@ -5,6 +5,9 @@ edition = "2024"
 rust-version = "1.88"
 description = "Git history analytics for the terminal"
 license = "MIT"
+readme = "README.md"
+repository = "https://github.com/danielwanja/gitsanity"
+homepage = "https://github.com/danielwanja/gitsanity"
 keywords = ["cli", "tui", "git", "analytics"]
 categories = ["command-line-utilities", "development-tools"]
 

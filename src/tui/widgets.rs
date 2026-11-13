@@ -29,7 +29,13 @@ pub fn gradient(t: f64) -> Color {
 
 /// Five-step heat scale; level 0 is "nothing here".
 pub fn heat(level: usize) -> Color {
-    [FAINT, Color::Rgb(14, 68, 41), Color::Rgb(0, 109, 50), Color::Rgb(38, 166, 65), Color::Rgb(57, 211, 83)][level.min(4)]
+    [
+        FAINT,
+        Color::Rgb(14, 68, 41),
+        Color::Rgb(0, 109, 50),
+        Color::Rgb(38, 166, 65),
+        Color::Rgb(57, 211, 83),
+    ][level.min(4)]
 }
 
 /// 0 for zero, otherwise 1..=4 by share of `max` (square-root scaled so a few
@@ -123,7 +129,13 @@ pub fn sparkline(values: &[u64], width: usize) -> String {
     let max = cells.iter().copied().max().unwrap_or(0).max(1);
     cells
         .iter()
-        .map(|v| if *v == 0 { "▁" } else { EIGHTHS[((*v as f64 / max as f64) * 7.0).round() as usize + 1] })
+        .map(|v| {
+            if *v == 0 {
+                "▁"
+            } else {
+                EIGHTHS[((*v as f64 / max as f64) * 7.0).round() as usize + 1]
+            }
+        })
         .collect()
 }
 
@@ -158,7 +170,11 @@ pub fn bar_span(i: usize, n: usize, width: usize) -> (usize, usize) {
     let n = n.max(1);
     let (x0, x1) = (i * width / n, (i + 1) * width / n);
     // Same bar width everywhere; only the gaps absorb the rounding.
-    if width / n >= 2 { (x0, x0 + width / n - 1) } else { (x0, x1.max(x0 + 1)) }
+    if width / n >= 2 {
+        (x0, x0 + width / n - 1)
+    } else {
+        (x0, x1.max(x0 + 1))
+    }
 }
 
 /// Greedy word wrap to `width` columns.
@@ -183,12 +199,19 @@ pub fn wrap(text: &str, width: usize) -> Vec<String> {
 /// Vertical bars growing up from the bottom of `area`. Values must already fit
 /// (`values.len() <= area.width`). `color(i, t)` gets the bar index and its
 /// relative height.
-pub fn bars_up(buf: &mut Buffer, area: Rect, values: &[u64], max: u64, color: impl Fn(usize, f64) -> Color) {
+pub fn bars_up(
+    buf: &mut Buffer,
+    area: Rect,
+    values: &[u64],
+    max: u64,
+    color: impl Fn(usize, f64) -> Color,
+) {
     let max = max.max(1);
     for (i, v) in values.iter().enumerate() {
         let (x0, x1) = bar_span(i, values.len(), area.width as usize);
         let t = *v as f64 / max as f64;
-        let eighths = ((t * f64::from(area.height) * 8.0).round() as usize).max(usize::from(*v > 0));
+        let eighths =
+            ((t * f64::from(area.height) * 8.0).round() as usize).max(usize::from(*v > 0));
         let c = color(i, t);
         for row in 0..area.height as usize {
             let fill = eighths.saturating_sub(row * 8).min(8);
@@ -198,7 +221,11 @@ pub fn bars_up(buf: &mut Buffer, area: Rect, values: &[u64], max: u64, color: im
             let y = area.bottom() - 1 - row as u16;
             // A full cell paints its background too: terminals that add line
             // spacing leave a gap between glyph rows, but never between backgrounds.
-            let style = if fill == 8 { Style::new().fg(c).bg(c) } else { Style::new().fg(c) };
+            let style = if fill == 8 {
+                Style::new().fg(c).bg(c)
+            } else {
+                Style::new().fg(c)
+            };
             for x in x0..x1 {
                 let x = area.x + x as u16;
                 if x < area.right() {
@@ -216,7 +243,8 @@ pub fn bars_down(buf: &mut Buffer, area: Rect, values: &[u64], max: u64, color: 
     for (i, v) in values.iter().enumerate() {
         let (x0, x1) = bar_span(i, values.len(), area.width as usize);
         let t = *v as f64 / max as f64;
-        let eighths = ((t * f64::from(area.height) * 8.0).round() as usize).max(usize::from(*v > 0));
+        let eighths =
+            ((t * f64::from(area.height) * 8.0).round() as usize).max(usize::from(*v > 0));
         for row in 0..area.height as usize {
             let fill = eighths.saturating_sub(row * 8).min(8);
             if fill == 0 {
@@ -226,7 +254,10 @@ pub fn bars_down(buf: &mut Buffer, area: Rect, values: &[u64], max: u64, color: 
             let (glyph, style) = if fill == 8 {
                 ("█", Style::new().fg(color).bg(color))
             } else {
-                (EIGHTHS[8 - fill], Style::new().fg(color).add_modifier(Modifier::REVERSED))
+                (
+                    EIGHTHS[8 - fill],
+                    Style::new().fg(color).add_modifier(Modifier::REVERSED),
+                )
             };
             for x in x0..x1 {
                 let x = area.x + x as u16;

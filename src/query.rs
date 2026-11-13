@@ -11,6 +11,38 @@ use crate::time::{Bounds, Buckets, Clock, Window};
 #[derive(Clone, Default, PartialEq)]
 pub struct Filter {
     pub author: Option<u32>,
+    /// One file (`src/a.rs`) or everything under a directory (`src/`).
+    pub path: Option<String>,
+}
+
+/// For a path filter, which files it selects.
+fn file_mask(store: &Store, filter: &Filter) -> Option<Vec<bool>> {
+    let path = filter.path.as_deref()?;
+    let dir = path.ends_with('/');
+    Some(
+        store
+            .paths
+            .iter()
+            .map(|p| if dir { p.starts_with(path) } else { p == path })
+            .collect(),
+    )
+}
+
+/// Lines a commit added and removed, counting only files the mask selects.
+/// None when the mask leaves the commit with nothing.
+fn commit_lines(store: &Store, i: usize, mask: Option<&[bool]>) -> Option<(u64, u64)> {
+    let Some(mask) = mask else {
+        return Some((u64::from(store.c_add[i]), u64::from(store.c_del[i])));
+    };
+    let (mut added, mut removed, mut any) = (0, 0, false);
+    for c in store.changes_of(i) {
+        if mask[store.ch_file[c] as usize] {
+            any = true;
+            added += u64::from(store.ch_add[c]);
+            removed += u64::from(store.ch_del[c]);
+        }
+    }
+    any.then_some((added, removed))
 }
 
 #[derive(Clone, Copy, Default)]
@@ -87,27 +119,43 @@ pub struct Summary {
 /// Local-day span of the repository, never reaching past today.
 pub fn bounds(store: &Store, clock: &Clock, now: i64) -> Bounds {
     let first = store.time.first().copied().unwrap_or(now);
-    let last = store.time.last().copied().unwrap_or(now).min(now).max(first);
-    Bounds { first_day: clock.day(first), last_day: clock.day(last) }
+    let last = store
+        .time
+        .last()
+        .copied()
+        .unwrap_or(now)
+        .min(now)
+        .max(first);
+    Bounds {
+        first_day: clock.day(first),
+        last_day: clock.day(last),
+    }
 }
 
 fn totals(store: &Store, w: &Window, filter: &Filter) -> Totals {
     let range = store.range(w.start, w.end);
     let mut t = Totals::default();
+    let mask = file_mask(store, filter);
     let mut author_seen = vec![false; store.people.len()];
     let mut file_seen = vec![false; store.paths.len()];
     for i in range {
         if filter.author.is_some_and(|a| a != store.author[i]) {
             continue;
         }
+        let Some((added, removed)) = commit_lines(store, i, mask.as_deref()) else {
+            continue;
+        };
         t.commits += 1;
-        t.added += u64::from(store.c_add[i]);
-        t.removed += u64::from(store.c_del[i]);
+        t.added += added;
+        t.removed += removed;
         if !std::mem::replace(&mut author_seen[store.author[i] as usize], true) {
             t.authors += 1;
         }
         for c in store.changes_of(i) {
-            if !std::mem::replace(&mut file_seen[store.ch_file[c] as usize], true) {
+            let file = store.ch_file[c] as usize;
+            if mask.as_ref().is_none_or(|m| m[file])
+                && !std::mem::replace(&mut file_seen[file], true)
+            {
                 t.files += 1;
             }
         }
@@ -137,7 +185,9 @@ pub fn summarize(
     let nb = buckets.len();
     let mut s = Summary {
         totals: Totals::default(),
-        previous: w.shifted(clock, -1, bounds).map(|p| totals(store, &p, filter)),
+        previous: w
+            .shifted(clock, -1, bounds)
+            .map(|p| totals(store, &p, filter)),
         merges: 0,
         biggest_day: None,
         b_commits: vec![0; nb],
@@ -163,6 +213,7 @@ pub fn summarize(
     let mut ctypes = [(0u64, 0u64); COMMIT_TYPES.len()];
     let mut kinds = [(0u64, 0u64); 5];
     let needle = search.to_lowercase();
+    let mask = file_mask(store, filter);
     let mut bucket = 0usize;
 
     for i in range {
@@ -171,7 +222,9 @@ pub fn summarize(
             continue;
         }
         let t = store.time[i];
-        let (added, removed) = (u64::from(store.c_add[i]), u64::from(store.c_del[i]));
+        let Some((added, removed)) = commit_lines(store, i, mask.as_deref()) else {
+            continue;
+        };
         s.totals.commits += 1;
         s.totals.added += added;
         s.totals.removed += removed;
@@ -198,7 +251,14 @@ pub fn summarize(
         let slot = &mut author_slot[author as usize];
         if *slot == u32::MAX {
             *slot = authors.len() as u32;
-            authors.push(AuthorRow { id: author, commits: 0, added: 0, removed: 0, first: t, last: t });
+            authors.push(AuthorRow {
+                id: author,
+                commits: 0,
+                added: 0,
+                removed: 0,
+                first: t,
+                last: t,
+            });
         }
         let a = &mut authors[*slot as usize];
         a.commits += 1;
@@ -208,11 +268,20 @@ pub fn summarize(
 
         for c in store.changes_of(i) {
             let file = store.ch_file[c];
+            if mask.as_ref().is_some_and(|m| !m[file as usize]) {
+                continue;
+            }
             let (fa, fr) = (u64::from(store.ch_add[c]), u64::from(store.ch_del[c]));
             let slot = &mut file_slot[file as usize];
             if *slot == u32::MAX {
                 *slot = files.len() as u32;
-                files.push(FileRow { id: file, touches: 0, added: 0, removed: 0, last: t });
+                files.push(FileRow {
+                    id: file,
+                    touches: 0,
+                    added: 0,
+                    removed: 0,
+                    last: t,
+                });
             }
             let f = &mut files[*slot as usize];
             f.touches += 1;
@@ -264,7 +333,11 @@ pub fn summarize(
         let churn = f.added + f.removed;
         let group = dir_group(&store.dirs[store.f_dir[f.id as usize] as usize]);
         let d = dirs.entry(group).or_insert_with(|| NamedRow {
-            name: if group.is_empty() { "(root)".to_owned() } else { group.to_owned() },
+            name: if group.is_empty() {
+                "(root)".to_owned()
+            } else {
+                group.to_owned()
+            },
             touches: 0,
             churn: 0,
             files: 0,
@@ -284,12 +357,25 @@ pub fn summarize(
         l.files += 1;
     }
     let by_lines = store.stage == Stage::Lines;
-    let weight = |churn: u64, touches: u64| if by_lines { (churn, touches) } else { (touches, churn) };
+    let weight = |churn: u64, touches: u64| {
+        if by_lines {
+            (churn, touches)
+        } else {
+            (touches, churn)
+        }
+    };
     s.dirs = dirs.into_values().collect();
-    s.dirs.sort_unstable_by(|a, b| weight(b.churn, b.touches).cmp(&weight(a.churn, a.touches)).then(a.name.cmp(&b.name)));
+    s.dirs.sort_unstable_by(|a, b| {
+        weight(b.churn, b.touches)
+            .cmp(&weight(a.churn, a.touches))
+            .then(a.name.cmp(&b.name))
+    });
     s.langs = langs.into_values().collect();
-    s.langs
-        .sort_unstable_by(|a, b| weight(b.churn, b.touches).cmp(&weight(a.churn, a.touches)).then(a.name.cmp(&b.name)));
+    s.langs.sort_unstable_by(|a, b| {
+        weight(b.churn, b.touches)
+            .cmp(&weight(a.churn, a.touches))
+            .then(a.name.cmp(&b.name))
+    });
     files.sort_unstable_by(|a, b| {
         weight(b.added + b.removed, u64::from(b.touches))
             .cmp(&weight(a.added + a.removed, u64::from(a.touches)))
@@ -299,8 +385,13 @@ pub fn summarize(
     s.files = files;
     authors.sort_unstable_by(|a, b| b.commits.cmp(&a.commits).then(a.id.cmp(&b.id)));
     s.authors = authors;
-    s.ctypes = COMMIT_TYPES.iter().zip(ctypes).filter(|(_, c)| c.0 > 0).map(|(n, c)| (*n, c.0, c.1)).collect();
-    s.ctypes.sort_by(|a, b| b.1.cmp(&a.1));
+    s.ctypes = COMMIT_TYPES
+        .iter()
+        .zip(ctypes)
+        .filter(|(_, c)| c.0 > 0)
+        .map(|(n, c)| (*n, c.0, c.1))
+        .collect();
+    s.ctypes.sort_by_key(|c| std::cmp::Reverse(c.1));
     s.kinds = ["added", "modified", "deleted", "renamed", "binary"]
         .into_iter()
         .zip(kinds)
@@ -316,8 +407,12 @@ fn matches(store: &Store, clock: &Clock, i: usize, needle: &str) -> bool {
     contains_ci(store.subject(i), needle)
         || contains_ci(&p.name, needle)
         || contains_ci(&p.email, needle)
-        || (needle.len() >= 4 && needle.bytes().all(|b| b.is_ascii_hexdigit()) && store.hex_oid(i).starts_with(needle))
-        || (needle.len() >= 4 && needle.as_bytes()[..4].iter().all(u8::is_ascii_digit) && clock.date(store.time[i]).starts_with(needle))
+        || (needle.len() >= 4
+            && needle.bytes().all(|b| b.is_ascii_hexdigit())
+            && store.hex_oid(i).starts_with(needle))
+        || (needle.len() >= 4
+            && needle.as_bytes()[..4].iter().all(u8::is_ascii_digit)
+            && clock.date(store.time[i]).starts_with(needle))
 }
 
 fn contains_ci(hay: &str, needle_lower: &str) -> bool {
@@ -325,5 +420,6 @@ fn contains_ci(hay: &str, needle_lower: &str) -> bool {
         return false;
     }
     let (h, n) = (hay.as_bytes(), needle_lower.as_bytes());
-    h.windows(n.len()).any(|w| w.iter().zip(n).all(|(a, b)| a.to_ascii_lowercase() == *b))
+    h.windows(n.len())
+        .any(|w| w.iter().zip(n).all(|(a, b)| a.to_ascii_lowercase() == *b))
 }
