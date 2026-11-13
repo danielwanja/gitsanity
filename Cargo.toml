@@ -1,0 +1,38 @@
+[package]
+name = "gitsanity"
+version = "2.0.0-alpha.1"
+edition = "2024"
+rust-version = "1.88"
+description = "Git history analytics for the terminal"
+license = "MIT"
+keywords = ["cli", "tui", "git", "analytics"]
+categories = ["command-line-utilities", "development-tools"]
+
+[dependencies]
+anyhow = "1"
+bincode = "1.3"
+clap = { version = "4.6", features = ["derive"] }
+etcetera = "0.11"
+gix = { version = "0.90", default-features = false, features = ["max-performance", "blob-diff", "parallel", "revision", "sha1"] }
+jiff = "0.2"
+ratatui = "0.30"
+rayon = "1"
+serde = { version = "1", features = ["derive"] }
+thread_local = "1"
+unicode-width = "0.2"
+zstd = { version = "0.13", features = ["zstdmt"] }
+
+[dev-dependencies]
+insta = "1"
+tempfile = "3"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
+
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
