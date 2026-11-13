@@ -10,18 +10,28 @@ repository = "https://github.com/danielwanja/gitsanity"
 keywords = ["cli", "tui", "git", "analytics"]
 categories = ["command-line-utilities", "development-tools"]
 
+[features]
+default = ["tui"]
+# The terminal app. The engine (the library) builds without it; the Mac app does.
+tui = ["dep:clap", "dep:ratatui", "dep:unicode-width"]
+
+[[bin]]
+name = "gitsanity"
+path = "src/main.rs"
+required-features = ["tui"]
+
 [dependencies]
 anyhow = "1"
 bincode = "1.3"
-clap = { version = "4.6", features = ["derive"] }
+clap = { version = "4.6", features = ["derive"], optional = true }
 etcetera = "0.11"
 gix = { version = "0.90", default-features = false, features = ["max-performance", "blob-diff", "parallel", "revision", "sha1"] }
 jiff = "0.2"
-ratatui = "0.30"
+ratatui = { version = "0.30", optional = true }
 rayon = "1"
 serde = { version = "1", features = ["derive"] }
 thread_local = "1"
-unicode-width = "0.2"
+unicode-width = { version = "0.2", optional = true }
 zstd = { version = "0.13", features = ["zstdmt"] }
 
 [dev-dependencies]

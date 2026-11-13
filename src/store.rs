@@ -89,6 +89,10 @@ impl Store {
         self.oid.len()
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.oid.is_empty()
+    }
+
     pub fn subject(&self, i: usize) -> &str {
         let start = if i == 0 {
             0
@@ -501,6 +505,8 @@ pub struct RepoInfo {
     pub spec: Option<String>,
     pub head: ObjectId,
     pub ref_name: String,
+    /// Where the index is cached; None means the user's cache directory.
+    pub cache_dir: Option<PathBuf>,
 }
 
 /// The commit a ref (or HEAD) points at right now, and how to label it.
@@ -550,10 +556,28 @@ pub fn open(path: &Path, spec: Option<&str>) -> Result<RepoInfo> {
         spec: spec.map(str::to_owned),
         head,
         ref_name,
+        cache_dir: None,
     })
 }
 
 impl RepoInfo {
+    /// Keep the cached index in `dir` instead of the user's cache directory.
+    pub fn with_cache_dir(mut self, dir: PathBuf) -> Self {
+        self.cache_dir = Some(dir);
+        self
+    }
+
+    /// Message body (everything after the subject) of a commit.
+    pub fn commit_body(&self, oid: &[u8; 20]) -> String {
+        use gix::objs::Find;
+        let repo = self.repo.to_thread_local();
+        let mut buf = Vec::new();
+        match repo.objects.try_find(&ObjectId::from(*oid), &mut buf) {
+            Ok(Some(data)) => git::message_body(data.data),
+            _ => String::new(),
+        }
+    }
+
     /// Where the ref points now; differs from `head` once someone commits or pulls.
     pub fn current_tip(&self) -> Option<ObjectId> {
         resolve(&self.repo.to_thread_local(), self.spec.as_deref())
@@ -727,14 +751,31 @@ pub fn index(
     ))
 }
 
+/// Hand heap pages freed after indexing back to the system. Indexing a large
+/// repository allocates a few gigabytes of short-lived buffers; without this a
+/// long-running app keeps them mapped.
+pub fn release_memory() {
+    #[cfg(target_os = "macos")]
+    {
+        unsafe extern "C" {
+            fn malloc_zone_pressure_relief(zone: *mut std::ffi::c_void, goal: usize) -> usize;
+        }
+        // SAFETY: a null zone means "all zones"; the call only trims free pages.
+        unsafe { malloc_zone_pressure_relief(std::ptr::null_mut(), 0) };
+    }
+}
+
 // --------------------------------------------------------------------- cache
 
 fn cache_path(info: &RepoInfo) -> Option<PathBuf> {
     use etcetera::BaseStrategy;
-    let base = etcetera::choose_base_strategy()
-        .ok()?
-        .cache_dir()
-        .join("gitsanity");
+    let base = match &info.cache_dir {
+        Some(dir) => dir.clone(),
+        None => etcetera::choose_base_strategy()
+            .ok()?
+            .cache_dir()
+            .join("gitsanity"),
+    };
     // FNV-1a of the git dir: stable, and no path characters to escape.
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     // One cache file per repository and ref, so switching refs keeps both.

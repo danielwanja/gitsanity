@@ -180,8 +180,22 @@ pub fn summarize(
     search: &str,
     max_buckets: usize,
 ) -> Summary {
-    let range = store.range(w.start, w.end);
     let buckets = Buckets::fit(clock, w, max_buckets);
+    summarize_with(store, clock, w, bounds, filter, search, buckets)
+}
+
+/// [`summarize`] with the bucket size chosen by the caller (the Mac app's
+/// code-frequency chart is always weekly, for instance).
+pub fn summarize_with(
+    store: &Store,
+    clock: &Clock,
+    w: &Window,
+    bounds: Bounds,
+    filter: &Filter,
+    search: &str,
+    buckets: Buckets,
+) -> Summary {
+    let range = store.range(w.start, w.end);
     let nb = buckets.len();
     let mut s = Summary {
         totals: Totals::default(),

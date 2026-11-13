@@ -84,6 +84,10 @@ impl Graph {
         self.order.len()
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.order.is_empty()
+    }
+
     /// Rows `start..start + count`, laid out.
     pub fn rows(&mut self, store: &Store, start: usize, count: usize) -> Vec<Row> {
         let end = (start + count).min(self.order.len());

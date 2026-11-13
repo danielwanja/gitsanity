@@ -19,7 +19,7 @@ name = "uniffi-bindgen"
 path = "uniffi-bindgen.rs"
 
 [dependencies]
-gitsanity = { path = ".." }
+gitsanity = { path = "..", default-features = false }
 uniffi = { version = "0.32", features = ["cli"] }
 
 [profile.release]

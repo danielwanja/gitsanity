@@ -214,7 +214,7 @@ pub struct Bounds {
 }
 
 impl Window {
-    fn of(clock: &Clock, preset: Preset, first_day: i64, last_day: i64) -> Window {
+    pub fn of(clock: &Clock, preset: Preset, first_day: i64, last_day: i64) -> Window {
         Window {
             preset,
             first_day,
@@ -406,6 +406,10 @@ impl Buckets {
 
     pub fn len(&self) -> usize {
         self.edges.len() - 1
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 
     /// Index of the bucket holding `t` (which must lie inside the window).
