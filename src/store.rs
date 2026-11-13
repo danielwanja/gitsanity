@@ -80,15 +80,11 @@ pub struct Store {
     pub langs: Vec<String>,
 }
 
-const VERSION: u32 = 3;
+const VERSION: u32 = 5;
 
 impl Store {
     pub fn len(&self) -> usize {
         self.oid.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.oid.is_empty()
     }
 
     pub fn subject(&self, i: usize) -> &str {
@@ -141,11 +137,10 @@ fn classify(subject: &str, merge: bool) -> u8 {
         return 1;
     }
     for (i, name) in COMMIT_TYPES.iter().enumerate().skip(2).take(10) {
-        if let Some(rest) = lower.strip_prefix(name.as_bytes()) {
-            if matches!(rest.first(), Some(b':' | b'(' | b'!')) {
+        if let Some(rest) = lower.strip_prefix(name.as_bytes())
+            && matches!(rest.first(), Some(b':' | b'(' | b'!')) {
                 return i as u8;
             }
-        }
     }
     12
 }
@@ -179,7 +174,7 @@ fn language(ext: &str) -> String {
         "lua" => "Lua",
         "zig" => "Zig",
         "" => "Other",
-        other => return other.to_ascii_uppercase(),
+        other => return format!(".{other}"),
     };
     known.to_owned()
 }
@@ -217,7 +212,7 @@ pub fn from_commits(mut raw: Vec<RawCommit>, head: ObjectId, ref_name: String) -
             repaired += 1;
         }
     }
-    raw.sort_unstable_by(|a, b| (a.author_time, a.oid).cmp(&(b.author_time, b.oid)));
+    raw.sort_unstable_by_key(|a| (a.author_time, a.oid));
 
     let n = raw.len();
     let index: HashMap<ObjectId, u32> = raw.iter().enumerate().map(|(i, c)| (c.oid, i as u32)).collect();
@@ -236,7 +231,9 @@ pub fn from_commits(mut raw: Vec<RawCommit>, head: ObjectId, ref_name: String) -
         let key = if email.is_empty() { name.to_lowercase() } else { email.to_lowercase() };
         let id = *by_email.entry(key).or_insert_with(|| {
             let lower = format!("{name} {email}").to_lowercase();
-            let is_bot = lower.contains("[bot]") || lower.contains("bot@") || lower.contains("noreply");
+            // GitHub's private "users.noreply.github.com" addresses belong to people,
+            // so "noreply" alone says nothing; only an explicit bot marker counts.
+            let is_bot = lower.contains("[bot]") || lower.contains("bot@");
             people.push(Person { name: name.to_owned(), email: email.to_owned(), is_bot });
             people.len() as u32 - 1
         });

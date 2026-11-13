@@ -83,6 +83,11 @@ pub struct App {
     pub sel: [usize; 5],
     pub summary: Option<Summary>,
     pub summary_ms: f64,
+    /// The selected contributor's own summary for the window (Contributors view).
+    pub detail: Option<(u32, Summary)>,
+    /// Message body of the selected commit, read from the repository on demand.
+    pub body: Option<(u32, String)>,
+    repo: gix::Repository,
     chart_width: usize,
     dirty: bool,
     /// Click targets recorded by the last draw.
@@ -120,6 +125,9 @@ impl App {
             sel: [0; 5],
             summary: None,
             summary_ms: 0.0,
+            detail: None,
+            body: None,
+            repo: info.repo.to_thread_local(),
             chart_width: 120,
             dirty: true,
             hits: Vec::new(),
@@ -179,11 +187,41 @@ impl App {
         let summary = query::summarize(store, &self.clock, w, self.bounds, &self.filter, &self.search, chart_width);
         self.summary_ms = t.elapsed().as_secs_f64() * 1e3;
         self.summary = Some(summary);
+        self.detail = None;
         self.dirty = false;
         for tab in Tab::ALL {
             let i = tab as usize;
             self.sel[i] = self.sel[i].min(self.rows(tab).saturating_sub(1));
         }
+    }
+
+    /// Summarize the window again for just the selected contributor.
+    pub fn load_detail(&mut self, chart_width: usize) {
+        let (Some(store), Some(w), Some(s)) = (&self.store, &self.window, &self.summary) else { return };
+        let Some(id) = s.authors.get(self.sel[Tab::Contributors as usize]).map(|a| a.id) else { return };
+        if self.detail.as_ref().is_some_and(|(have, _)| *have == id) {
+            return;
+        }
+        let filter = Filter { author: Some(id) };
+        let detail = query::summarize(store, &self.clock, w, self.bounds, &filter, "", chart_width);
+        self.detail = Some((id, detail));
+    }
+
+    /// Read the selected commit's message body.
+    pub fn load_body(&mut self) {
+        let (Some(store), Some(s)) = (&self.store, &self.summary) else { return };
+        let Some(ci) = s.commits.get(self.sel[Tab::Commits as usize]).copied() else { return };
+        if self.body.as_ref().is_some_and(|(have, _)| *have == ci) {
+            return;
+        }
+        use gix::objs::Find;
+        let mut buf = Vec::new();
+        let id = gix::ObjectId::from(store.oid[ci as usize]);
+        let text = match self.repo.objects.try_find(&id, &mut buf) {
+            Ok(Some(data)) => crate::git::message_body(data.data),
+            _ => String::new(),
+        };
+        self.body = Some((ci, text));
     }
 
     pub fn rows(&self, tab: Tab) -> usize {
@@ -348,13 +386,12 @@ fn unix_now() -> i64 {
 pub fn spawn_loader(info: RepoInfo, progress: Arc<Progress>, reindex: bool) -> Receiver<Update> {
     let (tx, rx) = channel();
     std::thread::spawn(move || {
-        if !reindex {
-            if let Some(cached) = store::load_cache(&info) {
+        if !reindex
+            && let Some(cached) = store::load_cache(&info) {
                 progress.phase.store(crate::git::PHASE_DONE, Ordering::Relaxed);
                 let _ = tx.send(Update::Store(Arc::new(cached), true));
                 return;
             }
-        }
         match store::index(&info, &progress, true, |s| {
             let _ = tx.send(Update::Store(s, false));
         }) {

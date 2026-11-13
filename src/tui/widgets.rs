@@ -45,7 +45,7 @@ pub fn fmt_n(n: u64) -> String {
     let s = n.to_string();
     let mut out = String::with_capacity(s.len() + s.len() / 3);
     for (i, c) in s.chars().enumerate() {
-        if i > 0 && (s.len() - i) % 3 == 0 {
+        if i > 0 && (s.len() - i).is_multiple_of(3) {
             out.push(',');
         }
         out.push(c);
@@ -152,16 +152,32 @@ pub fn hbar(value: u64, max: u64, width: usize) -> String {
 }
 
 /// Columns `[start, end)` that bar `i` of `n` occupies in a chart `width` wide.
-/// Few bars get breathing room; many bars are stretched edge to edge so the
-/// chart always uses the full width.
+/// Bars always spread over the full width: with room to spare each one keeps a
+/// one-column gap to its neighbour, otherwise they sit edge to edge.
 pub fn bar_span(i: usize, n: usize, width: usize) -> (usize, usize) {
-    let step = width / n.max(1);
-    if step >= 2 {
-        let step = step.min(6);
-        (i * step, i * step + step - 1)
-    } else {
-        (i * width / n, ((i + 1) * width / n).max(i * width / n + 1))
+    let n = n.max(1);
+    let (x0, x1) = (i * width / n, (i + 1) * width / n);
+    // Same bar width everywhere; only the gaps absorb the rounding.
+    if width / n >= 2 { (x0, x0 + width / n - 1) } else { (x0, x1.max(x0 + 1)) }
+}
+
+/// Greedy word wrap to `width` columns.
+pub fn wrap(text: &str, width: usize) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut line = String::new();
+    for word in text.split_whitespace() {
+        if !line.is_empty() && line.width() + 1 + word.width() > width {
+            lines.push(std::mem::take(&mut line));
+        }
+        if !line.is_empty() {
+            line.push(' ');
+        }
+        line.push_str(word);
     }
+    if !line.is_empty() {
+        lines.push(line);
+    }
+    lines
 }
 
 /// Vertical bars growing up from the bottom of `area`. Values must already fit
@@ -173,13 +189,16 @@ pub fn bars_up(buf: &mut Buffer, area: Rect, values: &[u64], max: u64, color: im
         let (x0, x1) = bar_span(i, values.len(), area.width as usize);
         let t = *v as f64 / max as f64;
         let eighths = ((t * f64::from(area.height) * 8.0).round() as usize).max(usize::from(*v > 0));
-        let style = Style::new().fg(color(i, t));
+        let c = color(i, t);
         for row in 0..area.height as usize {
             let fill = eighths.saturating_sub(row * 8).min(8);
             if fill == 0 {
                 break;
             }
             let y = area.bottom() - 1 - row as u16;
+            // A full cell paints its background too: terminals that add line
+            // spacing leave a gap between glyph rows, but never between backgrounds.
+            let style = if fill == 8 { Style::new().fg(c).bg(c) } else { Style::new().fg(c) };
             for x in x0..x1 {
                 let x = area.x + x as u16;
                 if x < area.right() {
@@ -205,7 +224,7 @@ pub fn bars_down(buf: &mut Buffer, area: Rect, values: &[u64], max: u64, color: 
             }
             let y = area.y + row as u16;
             let (glyph, style) = if fill == 8 {
-                ("█", Style::new().fg(color))
+                ("█", Style::new().fg(color).bg(color))
             } else {
                 (EIGHTHS[8 - fill], Style::new().fg(color).add_modifier(Modifier::REVERSED))
             };

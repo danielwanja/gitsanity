@@ -21,6 +21,11 @@ use crate::time::{self, Bucket, Preset, civil_from_days, month_name};
 pub fn draw(f: &mut Frame, app: &mut App) {
     let area = f.area();
     app.refresh((area.width as usize).saturating_sub(4).max(10));
+    match app.tab {
+        Tab::Commits => app.load_body(),
+        Tab::Contributors => app.load_detail((area.width as usize * 2 / 5).saturating_sub(6).max(10)),
+        _ => {}
+    }
     app.hits.clear();
     let [header, sub, tabs, body, footer] = Layout::vertical([
         Constraint::Length(1),
@@ -160,7 +165,7 @@ fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
     };
     let p = &app.progress;
     let spin = SPINNER[(app.started.elapsed().as_millis() / 80) as usize % SPINNER.len()];
-    let pct = |done: u64, total: u64| if total == 0 { 0 } else { (done * 100 / total).min(100) };
+    let pct = |done: u64, total: u64| (done * 100).checked_div(total).unwrap_or(0).min(100);
     let meter = |pct: u64| {
         let filled = (pct as usize * 12 / 100).min(12);
         format!("{}{}", "━".repeat(filled), "─".repeat(12 - filled))
@@ -235,8 +240,9 @@ fn delta_line(now: u64, previous: Option<u64>, width: usize) -> Line<'static> {
         Some(prev) => {
             let pct = (now as f64 - prev as f64) / prev as f64 * 100.0;
             let (arrow, color) = if pct >= 0.0 { ("▲", GREEN) } else { ("▼", RED) };
+            let change = if pct >= 1000.0 { format!("{:.1}×", now as f64 / prev as f64) } else { format!("{:.1}%", pct.abs()) };
             Line::from(vec![
-                Span::styled(format!("{arrow} {:.1}%", pct.abs()), Style::new().fg(color)),
+                Span::styled(format!("{arrow} {change}"), Style::new().fg(color)),
                 Span::styled(if width >= 22 { " vs previous period" } else { " vs prev" }, dim()),
             ])
         }
@@ -267,9 +273,12 @@ fn lines_pending(app: &App, store: &Store) -> Option<String> {
 }
 
 fn overview(f: &mut Frame, app: &App, store: &Store, s: &Summary, area: Rect) {
-    let bottom_h = if area.height >= 30 { 12 } else { 10 };
+    // The chart takes under half of what is left below the cards, capped, so a
+    // tall terminal gives its extra rows to the tables instead of stretching bars.
+    let below = area.height.saturating_sub(5);
+    let chart_h = (below * 45 / 100).min(22).min(below.saturating_sub(10)).max(6);
     let [kpis, chart, bottom] =
-        Layout::vertical([Constraint::Length(5), Constraint::Min(6), Constraint::Length(bottom_h)]).areas(area);
+        Layout::vertical([Constraint::Length(5), Constraint::Length(chart_h), Constraint::Min(0)]).areas(area);
 
     let cards: [Rect; 5] = Layout::horizontal([Constraint::Fill(1); 5]).areas(kpis);
     let prev = s.previous;
@@ -330,11 +339,17 @@ fn overview(f: &mut Frame, app: &App, store: &Store, s: &Summary, area: Rect) {
 
     timeline(f, app, s, chart);
 
-    let weeks_fit = ((area.width as usize * 2 / 5).saturating_sub(8) / 2).clamp(8, 53);
-    let cal_w = (weeks_fit * 2 + 8) as u16;
-    let [cal, hot, people] =
+    let weeks = calendar_weeks(app, (area.width as usize * 2 / 5).saturating_sub(8) / 2);
+    let cal_w = ((weeks * 2 + 8) as u16).max(46).min(area.width / 2);
+    let [left, hot, people] =
         Layout::horizontal([Constraint::Length(cal_w), Constraint::Fill(1), Constraint::Fill(1)]).areas(bottom);
-    calendar(f, app, s, cal, weeks_fit);
+    if left.height >= 18 {
+        let [cal, dirs] = Layout::vertical([Constraint::Length(11), Constraint::Min(0)]).areas(left);
+        calendar(f, app, s, cal, weeks);
+        directories(f, store, s, dirs);
+    } else {
+        calendar(f, app, s, left, weeks);
+    }
 
     let by_lines = store.stage == Stage::Lines;
     let block = panel(if by_lines { "Hot files · lines changed" } else { "Hot files · times touched" });
@@ -372,6 +387,7 @@ fn axis_labels(buf: &mut Buffer, app: &App, s: &Summary, area: Rect) {
     if n == 0 || area.width < 8 {
         return;
     }
+    let same_year = app.window.is_some_and(|w| civil_from_days(w.first_day).0 == civil_from_days(w.last_day).0);
     let mut next_free = area.x;
     let slots = (area.width as usize / 16).max(2);
     let every = n.div_ceil(slots).max(1);
@@ -379,6 +395,9 @@ fn axis_labels(buf: &mut Buffer, app: &App, s: &Summary, area: Rect) {
         let mut label = s.buckets.label(&app.clock, i);
         if s.buckets.bucket == Bucket::Hour && app.window.is_some_and(|w| w.days() == 1) {
             label = label.rsplit(' ').next().unwrap_or_default().to_owned();
+        }
+        if same_year && matches!(s.buckets.bucket, Bucket::Day | Bucket::Week) {
+            label.truncate(label.rfind(',').unwrap_or(label.len()));
         }
         let x = area.x + bar_span(i, n, area.width as usize).0 as u16;
         if x >= next_free && x + label.width() as u16 <= area.right() {
@@ -401,6 +420,24 @@ fn timeline(f: &mut Frame, app: &App, s: &Summary, area: Rect) {
     let n = s.b_commits.len().max(1);
     bars_up(f.buffer_mut(), bars, &s.b_commits, peak, |i, _| gradient(i as f64 / n as f64));
     axis_labels(f.buffer_mut(), app, s, Rect { y: inner.bottom() - 1, height: 1, ..inner });
+}
+
+/// How many week columns the day grid shows: the window's own weeks, up to `max`.
+fn calendar_weeks(app: &App, max: usize) -> usize {
+    let Some(w) = app.window else { return 1 };
+    (((w.last_day - w.first_day) / 7 + 2) as usize).min(max.clamp(8, 53)).max(1)
+}
+
+fn directories(f: &mut Frame, store: &Store, s: &Summary, area: Rect) {
+    let by_lines = store.stage == Stage::Lines;
+    let rows: Vec<_> = s
+        .dirs
+        .iter()
+        .take(60)
+        .enumerate()
+        .map(|(i, d)| (d.name.clone(), if by_lines { d.churn } else { d.touches }, gradient(i as f64 / 12.0)))
+        .collect();
+    bar_table(f, area, if by_lines { "Directories · lines changed" } else { "Directories · times touched" }, &rows);
 }
 
 fn calendar(f: &mut Frame, app: &App, s: &Summary, area: Rect, weeks: usize) {
@@ -463,7 +500,7 @@ fn bar_table(f: &mut Frame, area: Rect, title: &str, rows: &[(String, u64, Color
     f.render_widget(block, area);
     let total: u64 = rows.iter().map(|r| r.1).sum();
     let max = rows.iter().map(|r| r.1).max().unwrap_or(0);
-    let name_w = rows.iter().map(|r| r.0.width()).max().unwrap_or(0).min((inner.width as usize / 3).max(8));
+    let name_w = rows.iter().map(|r| r.0.width()).max().unwrap_or(0).min((inner.width as usize / 2).max(8));
     let bar_w = (inner.width as usize).saturating_sub(name_w + 20);
     for (row, (name, value, color)) in rows.iter().take(inner.height as usize).enumerate() {
         let y = inner.y + row as u16;
@@ -477,7 +514,14 @@ fn bar_table(f: &mut Frame, area: Rect, title: &str, rows: &[(String, u64, Color
 }
 
 fn activity(f: &mut Frame, app: &App, store: &Store, s: &Summary, area: Rect) {
-    let [chart, bottom] = Layout::vertical([Constraint::Min(8), Constraint::Length(11)]).areas(area);
+    // A tall terminal gets a third band (largest commits) rather than a taller chart.
+    let tall = area.height >= 40;
+    let [chart, mid, bottom] = if tall {
+        let chart_h = (area.height * 40 / 100).min(24);
+        Layout::vertical([Constraint::Length(chart_h), Constraint::Min(6), Constraint::Length(11)]).areas(area)
+    } else {
+        Layout::vertical([Constraint::Min(8), Constraint::Length(0), Constraint::Length(11)]).areas(area)
+    };
     let by_lines = store.stage == Stage::Lines;
     let (max_a, max_r) = (s.b_added.iter().copied().max().unwrap_or(0), s.b_removed.iter().copied().max().unwrap_or(0));
     let title = if by_lines {
@@ -508,6 +552,15 @@ fn activity(f: &mut Frame, app: &App, store: &Store, s: &Summary, area: Rect) {
         axis_labels(f.buffer_mut(), app, s, Rect { y: inner.bottom() - 1, height: 1, ..inner });
     }
 
+    if tall {
+        let block = panel(if by_lines { "Largest commits · lines changed" } else { "Largest commits · counting lines…" });
+        let inner = block.inner(mid);
+        f.render_widget(block, mid);
+        for (row, ci) in s.largest.iter().take(inner.height as usize).enumerate() {
+            commit_row(f.buffer_mut(), app, store, *ci as usize, Rect::new(inner.x, inner.y + row as u16, inner.width, 1), false);
+        }
+    }
+
     let [types, kinds, rhythm] =
         Layout::horizontal([Constraint::Fill(1), Constraint::Fill(1), Constraint::Length(58)]).areas(bottom);
     let palette = [VIOLET, CYAN, GREEN, AMBER, PINK, RED];
@@ -517,10 +570,13 @@ fn activity(f: &mut Frame, app: &App, store: &Store, s: &Summary, area: Rect) {
     let colors = [GREEN, CYAN, RED, AMBER, DIM];
     let rows: Vec<_> = s.kinds.iter().zip(colors).filter(|(k, _)| k.1 > 0).map(|((n, e, _), c)| ((*n).to_owned(), *e, c)).collect();
     bar_table(f, kinds, "File changes · events", &rows);
+    rhythm_panel(f, s, rhythm);
+}
 
+fn rhythm_panel(f: &mut Frame, s: &Summary, area: Rect) {
     let block = panel("Work rhythm · commits by weekday × hour, your time");
-    let inner = block.inner(rhythm);
-    f.render_widget(block, rhythm);
+    let inner = block.inner(area);
+    f.render_widget(block, area);
     let max = s.rhythm.iter().flatten().copied().max().unwrap_or(0);
     let buf = f.buffer_mut();
     for hour in (0..24).step_by(3) {
@@ -539,6 +595,35 @@ fn activity(f: &mut Frame, app: &App, store: &Store, s: &Summary, area: Rect) {
     }
 }
 
+/// `+12` in green / `−3` in red, dimmed when zero.
+fn signed(sign: char, value: u64, color: Color) -> Style {
+    let _ = sign;
+    if value == 0 { Style::new().fg(FAINT) } else { Style::new().fg(color) }
+}
+
+/// One commit on one line: sha, local date, author, subject, +added −removed.
+fn commit_row(buf: &mut Buffer, app: &App, store: &Store, i: usize, area: Rect, selected: bool) {
+    let style = row_style(selected);
+    buf.set_style(area, style);
+    let with_stats = store.stage == Stage::Lines && !store.is_merge(i);
+    let (a, r) = (u64::from(store.c_add[i]), u64::from(store.c_del[i]));
+    let stats_w = if with_stats { compact(a).len() + compact(r).len() + 4 } else { 0 };
+    let mut x = area.x + 1;
+    let mut put = |text: String, st: Style| {
+        buf.set_string(x, area.y, &text, st.patch(style));
+        x += text.width() as u16;
+    };
+    put(format!("{} ", store.short_oid(i)), Style::new().fg(AMBER));
+    put(format!("{} ", app.clock.datetime(store.time[i])), dim());
+    put(format!("{} ", pad(&store.people[store.author[i] as usize].name, 16)), Style::new().fg(CYAN));
+    let subject_w = (area.width as usize).saturating_sub(46 + stats_w);
+    put(pad(store.subject(i), subject_w), if store.is_merge(i) { dim() } else { Style::new() });
+    if with_stats {
+        put(format!(" +{}", compact(a)), signed('+', a, GREEN));
+        put(format!(" −{}", compact(r)), signed('-', r, RED));
+    }
+}
+
 // ------------------------------------------------------------------ tables
 
 /// First visible row so the selection stays roughly centred.
@@ -551,25 +636,32 @@ fn row_style(selected: bool) -> Style {
 }
 
 fn contributors(f: &mut Frame, app: &App, store: &Store, s: &Summary, area: Rect) {
+    let detail = app.detail.as_ref().filter(|_| area.width >= 150);
+    let [left, right] = match detail {
+        Some(_) => Layout::horizontal([Constraint::Fill(3), Constraint::Fill(2)]).areas(area),
+        None => [area, Rect::default()],
+    };
     let block = panel(&format!("Contributors · {} active in range", fmt_n(s.authors.len() as u64)))
-        .title(Line::from(" Enter filters everything by the selected contributor ").style(Style::new().fg(FAINT)).right_aligned());
-    let inner = block.inner(area);
-    f.render_widget(block, area);
+        .title(Line::from(" Enter: filter every view ").style(Style::new().fg(FAINT)).right_aligned());
+    let inner = block.inner(left);
+    f.render_widget(block, left);
     if inner.height < 2 {
         return;
     }
-    let name_w = (inner.width as usize).saturating_sub(96).clamp(16, 40);
+    // Under ~116 columns the share bar shrinks and the "Active" column goes.
+    let roomy = inner.width >= 116;
+    let bar_w = if roomy { 18 } else { 10 };
+    let fixed = if roomy { 96 } else { 67 };
+    let name_w = (inner.width as usize).saturating_sub(fixed).clamp(12, 40);
     let header = format!(
-        " {:>5}  {}  {:>9}  {:<18} {:>10} {:>10}  {:<10}  {:<10}  {:<9}",
+        " {:>5}  {}  {:>9}  {} {:>10} {:>10}  {}",
         "#",
         pad("Name", name_w),
         "Commits",
-        "Share",
+        pad("Share", bar_w),
         "Added",
         "Removed",
-        "First",
-        "Last",
-        "Active"
+        if roomy { "First       Last        Active" } else { "Last" }
     );
     f.buffer_mut().set_string(inner.x, inner.y, fit(&header, inner.width as usize), dim());
     let height = inner.height as usize - 1;
@@ -591,11 +683,84 @@ fn contributors(f: &mut Frame, app: &App, store: &Store, s: &Summary, area: Rect
         put(format!(" {:>5}  ", row + 1), dim());
         put(pad(&format!("{}{}", if filtered { "● " } else { "" }, p.name), name_w), if filtered { Style::new().fg(CYAN).bold() } else { Style::new().bold() });
         put(format!("  {:>9}  ", fmt_n(u64::from(a.commits))), Style::new());
-        put(pad(&hbar(u64::from(a.commits), max, 18), 18), Style::new().fg(gradient((row - top) as f64 / height.max(1) as f64)));
-        put(format!(" {:>10}", format!("+{}", compact(a.added))), Style::new().fg(GREEN));
-        put(format!(" {:>10}", format!("−{}", compact(a.removed))), Style::new().fg(RED));
-        put(format!("  {}  {}  ", app.clock.date(a.first), app.clock.date(a.last)), dim());
-        put(time::ago(app.now, a.last), dim());
+        put(pad(&hbar(u64::from(a.commits), max, bar_w), bar_w), Style::new().fg(gradient((row - top) as f64 / height.max(1) as f64)));
+        put(format!(" {:>10}", format!("+{}", compact(a.added))), signed('+', a.added, GREEN));
+        put(format!(" {:>10}", format!("−{}", compact(a.removed))), signed('-', a.removed, RED));
+        // The narrow layout keeps only the last date; first and last are in the side panel.
+        if roomy {
+            put(format!("  {}  {}  {}", app.clock.date(a.first), app.clock.date(a.last), time::ago(app.now, a.last)), dim());
+        } else {
+            put(format!("  {}", app.clock.date(a.last)), dim());
+        }
+    }
+    if let Some((id, d)) = detail {
+        contributor_detail(f, app, store, s, d, *id, right);
+    }
+}
+
+/// Right-hand column of the Contributors view: the selected person's own numbers.
+fn contributor_detail(f: &mut Frame, app: &App, store: &Store, all: &Summary, d: &Summary, id: u32, area: Rect) {
+    let [head, chart, files, dirs, rhythm] = Layout::vertical([
+        Constraint::Length(6),
+        Constraint::Length(10),
+        Constraint::Fill(3),
+        Constraint::Fill(2),
+        Constraint::Length(if area.height >= 50 { 10 } else { 0 }),
+    ])
+    .areas(area);
+    let p = &store.people[id as usize];
+    let share = if all.totals.commits == 0 { 0.0 } else { d.totals.commits as f64 / all.totals.commits as f64 * 100.0 };
+    let active_days = d.daily.iter().filter(|c| **c > 0).count();
+    let (first, last) = d.authors.first().map(|a| (a.first, a.last)).unwrap_or((0, 0));
+    let lines = vec![
+        Line::from(vec![
+            Span::styled(p.name.clone(), Style::new().fg(CYAN).bold()),
+            Span::styled(format!("  {}{}", p.email, if p.is_bot { "  · bot" } else { "" }), dim()),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled(fmt_n(d.totals.commits), Style::new().bold()),
+            Span::styled(format!(" commits · {share:.1}% of the range · "), dim()),
+            Span::styled(fmt_n(active_days as u64), Style::new().bold()),
+            Span::styled(format!(" active day{} · ", if active_days == 1 { "" } else { "s" }), dim()),
+            Span::styled(fmt_n(d.totals.files), Style::new().bold()),
+            Span::styled(" files", dim()),
+        ]),
+        Line::from(vec![
+            Span::styled(format!("+{}", fmt_n(d.totals.added)), signed('+', d.totals.added, GREEN)),
+            Span::styled(format!(" −{}", fmt_n(d.totals.removed)), signed('-', d.totals.removed, RED)),
+            Span::styled(format!("   first {} · last {}", app.clock.date(first), app.clock.date(last)), dim()),
+        ]),
+    ];
+    f.render_widget(Paragraph::new(lines).block(panel("Contributor").padding(ratatui::widgets::Padding::horizontal(1))), head);
+
+    let peak = d.b_commits.iter().copied().max().unwrap_or(0);
+    let block = panel(&format!("Their commits per {}", d.buckets.bucket.label()))
+        .title(Line::from(format!(" peak {} ", fmt_n(peak))).style(dim()).right_aligned());
+    let inner = block.inner(chart).inner(ratatui::layout::Margin::new(1, 0));
+    f.render_widget(block, chart);
+    if inner.height >= 2 {
+        let n = d.b_commits.len().max(1);
+        bars_up(f.buffer_mut(), Rect { height: inner.height - 1, ..inner }, &d.b_commits, peak, |i, _| gradient(i as f64 / n as f64));
+        axis_labels(f.buffer_mut(), app, d, Rect { y: inner.bottom() - 1, height: 1, ..inner });
+    }
+
+    let by_lines = store.stage == Stage::Lines;
+    let path_w = (files.width as usize / 2).saturating_sub(2);
+    let rows: Vec<_> = d
+        .files
+        .iter()
+        .take(60)
+        .enumerate()
+        .map(|(i, r)| {
+            let v = if by_lines { r.added + r.removed } else { u64::from(r.touches) };
+            (fit_tail(&store.paths[r.id as usize], path_w), v, gradient(i as f64 / 12.0))
+        })
+        .collect();
+    bar_table(f, files, if by_lines { "Their files · lines changed" } else { "Their files · times touched" }, &rows);
+    directories(f, store, d, dirs);
+    if rhythm.height > 0 {
+        rhythm_panel(f, d, rhythm);
     }
 }
 
@@ -632,8 +797,8 @@ fn files(f: &mut Frame, app: &App, store: &Store, s: &Summary, area: Rect) {
             let path = fit_tail(&store.paths[file.id as usize], path_w);
             put(format!("{path}{}", " ".repeat(path_w.saturating_sub(path.width()))), Style::new());
             put(format!("  {:>8}", fmt_n(u64::from(file.touches))), Style::new());
-            put(format!(" {:>9}", format!("+{}", compact(file.added))), Style::new().fg(GREEN));
-            put(format!(" {:>9}  ", format!("−{}", compact(file.removed))), Style::new().fg(RED));
+            put(format!(" {:>9}", format!("+{}", compact(file.added))), signed('+', file.added, GREEN));
+            put(format!(" {:>9}  ", format!("−{}", compact(file.removed))), signed('-', file.removed, RED));
             put(pad(&hbar(value(file), max, 12), 12), Style::new().fg(gradient((row - top) as f64 / height.max(1) as f64)));
             put(format!(" {}", app.clock.date(file.last)), dim());
         }
@@ -642,8 +807,7 @@ fn files(f: &mut Frame, app: &App, store: &Store, s: &Summary, area: Rect) {
     let [dirs, langs] = Layout::vertical([Constraint::Fill(1), Constraint::Fill(1)]).areas(right);
     let unit = if by_lines { "lines changed" } else { "times touched" };
     let value = |r: &crate::query::NamedRow| if by_lines { r.churn } else { r.touches };
-    let rows: Vec<_> = s.dirs.iter().take(40).enumerate().map(|(i, d)| (d.name.clone(), value(d), gradient(i as f64 / 12.0))).collect();
-    bar_table(f, dirs, &format!("Directories · {unit}"), &rows);
+    directories(f, store, s, dirs);
     let palette = [VIOLET, CYAN, GREEN, AMBER, PINK, RED];
     let rows: Vec<_> = s.langs.iter().take(40).enumerate().map(|(i, l)| (l.name.clone(), value(l), palette[i % palette.len()])).collect();
     bar_table(f, langs, &format!("File types · {unit}"), &rows);
@@ -665,28 +829,9 @@ fn commits(f: &mut Frame, app: &App, store: &Store, s: &Summary, area: Rect) {
     let height = inner.height as usize;
     let sel = app.sel[Tab::Commits as usize];
     let top = scroll(sel, s.commits.len(), height);
-    let by_lines = store.stage == Stage::Lines;
     for (row, ci) in s.commits.iter().enumerate().skip(top).take(height) {
-        let i = *ci as usize;
-        let y = inner.y + (row - top) as u16;
-        let style = row_style(row == sel);
-        let buf = f.buffer_mut();
-        buf.set_style(Rect::new(inner.x, y, inner.width, 1), style);
-        let stats = if by_lines { format!("+{} −{}", compact(u64::from(store.c_add[i])), compact(u64::from(store.c_del[i]))) } else { String::new() };
-        let mut x = inner.x + 1;
-        let mut put = |text: String, st: Style| {
-            buf.set_string(x, y, &text, st.patch(style));
-            x += text.width() as u16;
-        };
-        put(format!("{} ", store.short_oid(i)), Style::new().fg(AMBER));
-        put(format!("{} ", app.clock.datetime(store.time[i])), dim());
-        put(format!("{} ", pad(&store.people[store.author[i] as usize].name, 16)), Style::new().fg(CYAN));
-        let subject_w = (inner.width as usize).saturating_sub(46 + stats.width() + 2);
-        put(pad(store.subject(i), subject_w), if store.is_merge(i) { dim() } else { Style::new() });
-        if by_lines && !store.is_merge(i) {
-            put(format!(" +{}", compact(u64::from(store.c_add[i]))), Style::new().fg(GREEN));
-            put(format!(" −{}", compact(u64::from(store.c_del[i]))), Style::new().fg(RED));
-        }
+        let line = Rect::new(inner.x, inner.y + (row - top) as u16, inner.width, 1);
+        commit_row(f.buffer_mut(), app, store, *ci as usize, line, row == sel);
     }
 
     let block = panel("Commit");
@@ -697,6 +842,7 @@ fn commits(f: &mut Frame, app: &App, store: &Store, s: &Summary, area: Rect) {
         return;
     };
     let i = *ci as usize;
+    let width = inner.width as usize;
     let author = &store.people[store.author[i] as usize];
     let committer = &store.people[store.committer[i] as usize];
     let t = store.time[i];
@@ -714,12 +860,11 @@ fn commits(f: &mut Frame, app: &App, store: &Store, s: &Summary, area: Rect) {
     );
     let key = |k: &str| Span::styled(format!("{k:<10}"), dim());
     let parents = store.parents_of(i).len();
-    let mut lines = vec![
-        Line::from(Span::styled(store.hex_oid(i), Style::new().fg(AMBER))),
+    let mut lines = vec![Line::from(Span::styled(store.hex_oid(i), Style::new().fg(AMBER))), Line::from("")];
+    lines.extend(wrap(store.subject(i), width).into_iter().map(|l| Line::from(Span::styled(l, Style::new().bold()))));
+    lines.extend([
         Line::from(""),
-        Line::from(Span::styled(store.subject(i).to_owned(), Style::new().bold())),
-        Line::from(""),
-        Line::from(vec![key("Author"), Span::styled(author.name.clone(), Style::new().fg(CYAN)), Span::styled(format!("  {}", author.email), dim())]),
+        Line::from(vec![key("Author"), Span::styled(author.name.clone(), Style::new().fg(CYAN)), Span::styled(format!("  {}", fit(&author.email, width.saturating_sub(13 + author.name.width()))), dim())]),
         Line::from(vec![key("Authored"), Span::raw(app.clock.datetime(t)), Span::styled(format!("  your time · {}", time::ago(app.now, t)), dim())]),
         Line::from(vec![key(""), Span::styled(format!("{own_clock}  on the author's clock"), dim())]),
         Line::from(vec![key("Committed"), Span::raw(app.clock.datetime(store.commit_time[i])), Span::styled(format!("  by {}", committer.name), dim())]),
@@ -736,18 +881,39 @@ fn commits(f: &mut Frame, app: &App, store: &Store, s: &Summary, area: Rect) {
             ),
         ]),
         Line::from(""),
-    ];
+    ]);
+
+    // Message body: at most a third of the panel, so the file list keeps its room.
+    if let Some((_, body)) = app.body.as_ref().filter(|(have, text)| *have == *ci && !text.is_empty()) {
+        let room = (inner.height as usize / 3).max(3);
+        let mut wrapped: Vec<String> = Vec::new();
+        for para in body.lines() {
+            if para.trim().is_empty() {
+                wrapped.push(String::new());
+            } else {
+                wrapped.extend(wrap(para, width));
+            }
+        }
+        let more = wrapped.len().saturating_sub(room);
+        lines.extend(wrapped.into_iter().take(room).map(|l| Line::from(Span::styled(l, Style::new().fg(Color::Rgb(190, 197, 207))))));
+        if more > 0 {
+            lines.push(Line::from(Span::styled(format!("… {more} more line{}", if more == 1 { "" } else { "s" }), dim())));
+        }
+        lines.push(Line::from(""));
+    }
+
     let changes = store.changes_of(i);
     if store.stage == Stage::Commits {
         lines.push(Line::from(Span::styled("Files: scanning…", dim())));
     } else if !changes.is_empty() {
+        let (a, r) = (u64::from(store.c_add[i]), u64::from(store.c_del[i]));
         lines.push(Line::from(vec![
-            Span::styled(format!("{} file{}  ", changes.len(), if changes.len() == 1 { "" } else { "s" }), Style::new().bold()),
-            Span::styled(format!("+{}", fmt_n(u64::from(store.c_add[i]))), Style::new().fg(GREEN)),
-            Span::styled(format!(" −{}", fmt_n(u64::from(store.c_del[i]))), Style::new().fg(RED)),
+            Span::styled(format!("{} file{}  ", fmt_n(changes.len() as u64), if changes.len() == 1 { "" } else { "s" }), Style::new().bold()),
+            Span::styled(format!("+{}", fmt_n(a)), signed('+', a, GREEN)),
+            Span::styled(format!(" −{}", fmt_n(r)), signed('-', r, RED)),
         ]));
         let room = (inner.height as usize).saturating_sub(lines.len() + 1);
-        let path_w = (inner.width as usize).saturating_sub(18);
+        let path_w = width.saturating_sub(18);
         for c in changes.clone().take(room) {
             let kind = store.ch_kind[c];
             let (tag, color) = match kind & !FLAG_BINARY {
@@ -763,13 +929,14 @@ fn commits(f: &mut Frame, app: &App, store: &Store, s: &Summary, area: Rect) {
             if kind & FLAG_BINARY != 0 {
                 spans.push(Span::styled("  binary", dim()));
             } else {
-                spans.push(Span::styled(format!(" +{}", store.ch_add[c]), Style::new().fg(GREEN)));
-                spans.push(Span::styled(format!(" −{}", store.ch_del[c]), Style::new().fg(RED)));
+                let (fa, fr) = (u64::from(store.ch_add[c]), u64::from(store.ch_del[c]));
+                spans.push(Span::styled(format!(" +{fa}"), signed('+', fa, GREEN)));
+                spans.push(Span::styled(format!(" −{fr}"), signed('-', fr, RED)));
             }
             lines.push(Line::from(spans));
         }
         if changes.len() > room {
-            lines.push(Line::from(Span::styled(format!("… and {} more", changes.len() - room), dim())));
+            lines.push(Line::from(Span::styled(format!("… and {} more", fmt_n((changes.len() - room) as u64)), dim())));
         }
     }
     f.render_widget(Paragraph::new(lines), inner);

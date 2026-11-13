@@ -80,6 +80,8 @@ pub struct Summary {
     pub rhythm: [[u32; 24]; 7],
     /// Matching commits, newest first.
     pub commits: Vec<u32>,
+    /// The matching commits that changed the most lines, biggest first.
+    pub largest: Vec<u32>,
 }
 
 /// Local-day span of the repository, never reaching past today.
@@ -151,6 +153,7 @@ pub fn summarize(
         kinds: Vec::new(),
         rhythm: [[0; 24]; 7],
         commits: Vec::new(),
+        largest: Vec::new(),
     };
     let mut day_churn = vec![0u64; s.daily.len()];
     let mut authors: Vec<AuthorRow> = Vec::new();
@@ -237,6 +240,14 @@ pub fn summarize(
         }
     }
     s.commits.reverse();
+    let churn = |c: &u32| u64::from(store.c_add[*c as usize]) + u64::from(store.c_del[*c as usize]);
+    let mut largest: Vec<u32> = s.commits.iter().copied().filter(|c| churn(c) > 0).collect();
+    if largest.len() > 100 {
+        largest.select_nth_unstable_by_key(100, |c| std::cmp::Reverse(churn(c)));
+        largest.truncate(100);
+    }
+    largest.sort_unstable_by_key(|c| (std::cmp::Reverse(churn(c)), *c));
+    s.largest = largest;
     s.totals.authors = authors.len() as u64;
     s.totals.files = files.len() as u64;
     s.biggest_day = day_churn

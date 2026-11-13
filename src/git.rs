@@ -101,6 +101,16 @@ fn parse_commit(oid: ObjectId, data: &[u8]) -> Option<RawCommit> {
     Some(RawCommit { oid, tree: tree?, parents, author, committer, author_time, author_tz, commit_time, subject })
 }
 
+/// Everything in a commit message after its subject paragraph.
+pub fn message_body(data: &[u8]) -> String {
+    let text = String::from_utf8_lossy(data);
+    let Some((_, message)) = text.split_once("\n\n") else { return String::new() };
+    match message.trim_start_matches('\n').split_once("\n\n") {
+        Some((_, body)) => body.trim().to_owned(),
+        None => String::new(),
+    }
+}
+
 struct Worker {
     repo: gix::Repository,
     buf: Vec<u8>,
@@ -368,13 +378,12 @@ impl Differ<'_> {
         }
         let mut drop = Vec::new();
         for i in from..n {
-            if out.kinds[i] == KIND_ADD {
-                if let Some(d) = deleted.remove(&out.new[i]) {
+            if out.kinds[i] == KIND_ADD
+                && let Some(d) = deleted.remove(&out.new[i]) {
                     out.kinds[i] = KIND_REN;
                     out.old[i] = out.new[i];
                     drop.push(d);
                 }
-            }
         }
         if drop.is_empty() {
             return;

@@ -368,11 +368,8 @@ impl Buckets {
         self.edges.len() - 1
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-
     /// Index of the bucket holding `t` (which must lie inside the window).
+    #[cfg(test)]
     pub fn index(&self, t: i64) -> usize {
         (self.edges.partition_point(|e| *e <= t) - 1).min(self.len() - 1)
     }
