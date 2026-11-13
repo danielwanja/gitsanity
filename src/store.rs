@@ -84,7 +84,7 @@ pub struct Store {
     pub langs: Vec<String>,
 }
 
-const VERSION: u32 = 6;
+const VERSION: u32 = 7;
 
 impl Store {
     pub fn len(&self) -> usize {
@@ -221,6 +221,44 @@ impl Interner {
     }
 }
 
+/// Commits that share a timestamp (scripted commits, a series applied in one
+/// go) are put parent-first. Sorting by time alone would leave them in hash
+/// order, and "newest first" could then show a commit below its own parent.
+fn order_ties_by_ancestry(raw: &mut [RawCommit]) {
+    let mut start = 0;
+    while start < raw.len() {
+        let mut end = start + 1;
+        while end < raw.len() && raw[end].author_time == raw[start].author_time {
+            end += 1;
+        }
+        if end - start > 1 {
+            let run = &mut raw[start..end];
+            let index: HashMap<ObjectId, usize> =
+                run.iter().enumerate().map(|(i, c)| (c.oid, i)).collect();
+            let mut placed = vec![false; run.len()];
+            let mut rank: HashMap<ObjectId, usize> = HashMap::with_capacity(run.len());
+            while rank.len() < run.len() {
+                let before = rank.len();
+                for i in 0..run.len() {
+                    let ready = run[i]
+                        .parents
+                        .iter()
+                        .all(|p| index.get(p).is_none_or(|j| placed[*j]));
+                    if !placed[i] && ready {
+                        placed[i] = true;
+                        rank.insert(run[i].oid, rank.len());
+                    }
+                }
+                if rank.len() == before {
+                    break; // a cycle cannot happen in git history; never loop forever
+                }
+            }
+            run.sort_by_key(|c| rank.get(&c.oid).copied().unwrap_or(usize::MAX));
+        }
+        start = end;
+    }
+}
+
 /// The result of the commit walk, plus the tree-diff work list derived from it.
 pub fn from_commits(
     mut raw: Vec<RawCommit>,
@@ -241,6 +279,7 @@ pub fn from_commits(
         }
     }
     raw.sort_unstable_by_key(|a| (a.author_time, a.oid));
+    order_ties_by_ancestry(&mut raw);
 
     let n = raw.len();
     let index: HashMap<ObjectId, u32> = raw
@@ -1119,6 +1158,27 @@ mod tests {
             .unwrap()
             .with_cache_dir(cache.path().to_owned());
         assert!(load_cache(&moved).is_none());
+    }
+
+    #[test]
+    fn commits_made_in_the_same_second_stay_in_history_order() {
+        let tmp = tempfile::tempdir().unwrap();
+        let d = tmp.path();
+        git(d, "", &["init", "-q", "-b", "main"]);
+        let when = "2026-03-07T12:00:00+00:00";
+        for n in 1..=12 {
+            std::fs::write(d.join("f.txt"), format!("{n}\n")).unwrap();
+            git(d, when, &["add", "."]);
+            git(d, when, &["commit", "-q", "-m", &format!("step {n}")]);
+        }
+        let info = open(d, None).unwrap();
+        let (s, _) = index(&info, &Progress::default(), true, |_| {}).unwrap();
+        let subjects: Vec<String> = (0..s.len()).map(|i| s.subject(i).to_owned()).collect();
+        let expected: Vec<String> = (1..=12).map(|n| format!("step {n}")).collect();
+        assert_eq!(
+            subjects, expected,
+            "oldest first, each commit after its parent"
+        );
     }
 
     #[test]
