@@ -5,12 +5,11 @@ use std::time::Instant;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 
-mod git;
-mod graph;
-mod query;
+// The engine (history extraction, store, time, queries, graph) is the library
+// half of this crate; the terminal UI lives only in the binary.
+use gitsanity::{git, graph, query, store, time};
+
 mod snapshot;
-mod store;
-mod time;
 mod tui;
 
 #[derive(Parser)]

@@ -1,0 +1,28 @@
+[package]
+name = "gitsanity-ffi"
+version = "0.0.0"
+edition = "2024"
+publish = false
+description = "Swift bindings for the Gitsanity engine (spike)"
+license = "MIT"
+
+# Not part of the terminal app's package or its release pipeline.
+[workspace]
+
+[lib]
+name = "gitsanity_ffi"
+# staticlib is what the Mac app links; cdylib is what uniffi-bindgen reads.
+crate-type = ["staticlib", "cdylib"]
+
+[[bin]]
+name = "uniffi-bindgen"
+path = "uniffi-bindgen.rs"
+
+[dependencies]
+gitsanity = { path = ".." }
+uniffi = { version = "0.32", features = ["cli"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "debuginfo"
