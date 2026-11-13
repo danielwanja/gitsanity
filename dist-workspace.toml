@@ -29,3 +29,9 @@ install-path = "~/.local/bin"
 hosting = "github"
 # Whether to install an updater program
 install-updater = false
+
+# cargo-dist 0.33 asks for macos-14 on Apple Silicon, which GitHub has retired
+# ("The configuration 'macos-14-arm64-us-default' is not supported").
+# cargo-dist 0.34 defaults to macos-15; drop this once the version above is bumped.
+[dist.github-custom-runners]
+aarch64-apple-darwin = "macos-15"
