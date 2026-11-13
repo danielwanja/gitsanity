@@ -99,15 +99,16 @@ impl Graph {
             return Vec::new();
         }
         let mut state = self.checkpoints[start / STEP].clone();
-        for row in (start / STEP) * STEP..start {
-            step(&mut state, store, self.order[row], None);
+        for commit in &self.order[(start / STEP) * STEP..start] {
+            step(&mut state, store, *commit, None);
         }
-        (start..end)
-            .map(|row| {
+        self.order[start..end]
+            .iter()
+            .map(|commit| {
                 let mut cells = Vec::new();
-                step(&mut state, store, self.order[row], Some(&mut cells));
+                step(&mut state, store, *commit, Some(&mut cells));
                 Row {
-                    commit: self.order[row],
+                    commit: *commit,
                     cells,
                 }
             })

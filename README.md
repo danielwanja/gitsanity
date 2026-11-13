@@ -10,11 +10,27 @@ frequency and work rhythm for any time range, without waiting.
 
 ## Install
 
+Homebrew (macOS or Linux):
+
+```bash
+brew install danielwanja/tap/gitsanity
+```
+
+Without Homebrew, the installer picks the right binary, verifies its checksum
+and puts it in `~/.local/bin` (no `sudo`, no Rust needed):
+
+```bash
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/danielwanja/gitsanity/releases/latest/download/gitsanity-installer.sh | sh
+```
+
 With Rust 1.88 or newer:
 
 ```bash
 cargo install --git https://github.com/danielwanja/gitsanity
 ```
+
+Prebuilt archives for macOS (Apple Silicon, Intel) and Linux (x86-64, arm64)
+are on the [Releases](https://github.com/danielwanja/gitsanity/releases) page.
 
 ## Status: 2.0 alpha
 
@@ -87,6 +103,21 @@ cargo run --release -- bench <repo> --cache
 cargo run --release -- snapshot <repo> --tab activity --range 1Y            # text
 cargo run --release -- snapshot <repo> --tab overview --html overview.html  # with colours
 ```
+
+## Releasing
+
+Releases are built by [`cargo-dist`](https://github.com/axodotdev/cargo-dist)
+in GitHub Actions ([`release.yml`](.github/workflows/release.yml)). Bump the
+version in `Cargo.toml`, commit, then push a matching tag:
+
+```bash
+git tag v2.0.0-alpha.1 && git push origin v2.0.0-alpha.1
+```
+
+That publishes the GitHub Release and updates the formula in
+[`danielwanja/homebrew-tap`](https://github.com/danielwanja/homebrew-tap).
+The workflow needs the `HOMEBREW_TAP_TOKEN` repository secret (a token that
+can push to the tap).
 
 ## License
 
