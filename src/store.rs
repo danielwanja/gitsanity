@@ -72,6 +72,8 @@ pub struct Store {
     pub ch_kind: Vec<u8>,
     pub ch_add: Vec<u32>,
     pub ch_del: Vec<u32>,
+    /// Renames as (change index, file it was renamed from), ordered by change.
+    pub ren_from: Vec<(u32, u32)>,
 
     // -- dimensions
     pub people: Vec<Person>,
@@ -82,7 +84,7 @@ pub struct Store {
     pub langs: Vec<String>,
 }
 
-const VERSION: u32 = 5;
+const VERSION: u32 = 6;
 
 impl Store {
     pub fn len(&self) -> usize {
@@ -303,6 +305,7 @@ pub fn from_commits(
         ch_kind: Vec::new(),
         ch_add: Vec::new(),
         ch_del: Vec::new(),
+        ren_from: Vec::new(),
         people: Vec::new(),
         paths: Vec::new(),
         f_dir: Vec::new(),
@@ -384,6 +387,21 @@ pub struct ChangeBlobs {
 }
 
 impl Store {
+    fn intern_path(&mut self, raw: &[u8], dirs: &mut Interner, langs: &mut Interner) -> u32 {
+        let path = String::from_utf8_lossy(raw).into_owned();
+        let id = self.paths.len() as u32;
+        let dir = path.rfind('/').map(|i| &path[..i]).unwrap_or("");
+        let name = &path[path.rfind('/').map_or(0, |i| i + 1)..];
+        let ext = match name.rfind('.') {
+            Some(dot) if dot > 0 => name[dot + 1..].to_ascii_lowercase(),
+            _ => String::new(),
+        };
+        self.f_dir.push(dirs.get(dir));
+        self.f_lang.push(langs.get(&language(&ext)) as u16);
+        self.paths.push(path);
+        id
+    }
+
     /// Fold the tree-diff output in. Chunks arrive in job (history) order; the
     /// store wants changes grouped by commit index.
     pub fn apply_diff(&mut self, chunks: Vec<DiffChunk>) -> ChangeBlobs {
@@ -421,17 +439,7 @@ impl Store {
                 let id = match path_ids.get(raw) {
                     Some(id) => *id,
                     None => {
-                        let path = String::from_utf8_lossy(raw).into_owned();
-                        let id = self.paths.len() as u32;
-                        let dir = path.rfind('/').map(|i| &path[..i]).unwrap_or("");
-                        let name = &path[path.rfind('/').map_or(0, |i| i + 1)..];
-                        let ext = match name.rfind('.') {
-                            Some(dot) if dot > 0 => name[dot + 1..].to_ascii_lowercase(),
-                            _ => String::new(),
-                        };
-                        self.f_dir.push(dirs.get(dir));
-                        self.f_lang.push(langs.get(&language(&ext)) as u16);
-                        self.paths.push(path);
+                        let id = self.intern_path(raw, &mut dirs, &mut langs);
                         path_ids.insert(raw, id);
                         id
                     }
@@ -444,6 +452,26 @@ impl Store {
         while self.ch_start.len() <= n {
             self.ch_start.push(self.ch_file.len() as u32);
         }
+        // Rename sources, as (change, old file), ordered by change.
+        self.ren_from.clear();
+        let mut base = 0u32;
+        for chunk in &chunks {
+            for (index, start, end) in &chunk.ren_from {
+                let raw = &chunk.ren_arena[*start as usize..*end as usize];
+                let old_file = match path_ids.get(raw) {
+                    Some(id) => *id,
+                    None => {
+                        let id = self.intern_path(raw, &mut dirs, &mut langs);
+                        path_ids.insert(raw, id);
+                        id
+                    }
+                };
+                self.ren_from
+                    .push((position[(base + index) as usize], old_file));
+            }
+            base += chunk.kinds.len() as u32;
+        }
+        self.ren_from.sort_unstable();
         drop(path_ids);
         let mut blobs = ChangeBlobs {
             old: Vec::with_capacity(total),
@@ -792,26 +820,55 @@ fn cache_path(info: &RepoInfo) -> Option<PathBuf> {
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
-    Some(base.join(format!("{name}-{h:016x}.gsx")))
+    // ".gsx2": files with the checked header. Versions before it used ".gsx"
+    // and would misread these.
+    Some(base.join(format!("{name}-{h:016x}.gsx2")))
 }
 
 /// A finished index for exactly this HEAD, if one was saved earlier.
+/// Marks a cache file and its layout. Checked before anything else is read:
+/// decoding a file written with another layout would misread lengths and try
+/// to allocate absurd amounts of memory.
+const CACHE_MAGIC: [u8; 4] = *b"GSXC";
+
+fn cache_codec() -> impl bincode::Options {
+    use bincode::Options;
+    // The limit turns a corrupt length into an error instead of an abort.
+    bincode::options().with_limit(16 << 30)
+}
+
+/// A finished index for exactly this commit, if one was saved earlier. Any
+/// file that is missing, damaged or from another version just means "no cache".
 pub fn load_cache(info: &RepoInfo) -> Option<Store> {
+    use bincode::Options;
+    use std::io::Read;
     let file = std::fs::File::open(cache_path(info)?).ok()?;
-    let reader = zstd::Decoder::new(file).ok()?;
-    let store: Store =
-        bincode::deserialize_from(std::io::BufReader::with_capacity(1 << 20, reader)).ok()?;
+    let mut reader = std::io::BufReader::with_capacity(1 << 20, zstd::Decoder::new(file).ok()?);
+    let mut header = [0u8; 8];
+    reader.read_exact(&mut header).ok()?;
+    if header[..4] != CACHE_MAGIC || header[4..] != VERSION.to_le_bytes() {
+        return None;
+    }
+    let store: Store = cache_codec().deserialize_from(reader).ok()?;
     (store.version == VERSION && store.head == info.head.as_bytes() && store.stage == Stage::Lines)
         .then_some(store)
 }
 
 pub fn save_cache(info: &RepoInfo, store: &Store) -> Result<PathBuf> {
+    use bincode::Options;
+    use std::io::Write;
     let path = cache_path(info).context("no cache directory")?;
     std::fs::create_dir_all(path.parent().expect("has parent"))?;
     let tmp = path.with_extension("tmp");
     let mut enc = zstd::Encoder::new(std::fs::File::create(&tmp)?, 1)?;
     enc.multithread(4).ok();
-    bincode::serialize_into(std::io::BufWriter::with_capacity(1 << 20, &mut enc), store)?;
+    {
+        let mut out = std::io::BufWriter::with_capacity(1 << 20, &mut enc);
+        out.write_all(&CACHE_MAGIC)?;
+        out.write_all(&VERSION.to_le_bytes())?;
+        cache_codec().serialize_into(&mut out, store)?;
+        out.flush()?;
+    }
     enc.finish()?;
     std::fs::rename(&tmp, &path)?;
     Ok(path)
@@ -1025,6 +1082,46 @@ mod tests {
     }
 
     #[test]
+    fn cache_round_trips_and_rejects_foreign_files() {
+        let tmp = fixture();
+        let cache = tempfile::tempdir().unwrap();
+        let info = open(tmp.path(), None)
+            .unwrap()
+            .with_cache_dir(cache.path().to_owned());
+        assert!(load_cache(&info).is_none(), "nothing saved yet");
+        let (s, _) = index(&info, &Progress::default(), true, |_| {}).unwrap();
+        let file = save_cache(&info, &s).unwrap();
+        assert!(file.starts_with(cache.path()));
+        let back = load_cache(&info).expect("loads what was saved");
+        assert_eq!(
+            (back.len(), &back.subjects, &back.ren_from),
+            (s.len(), &s.subjects, &s.ren_from)
+        );
+
+        // A file in some other layout (an older version, or damaged) is ignored, not trusted.
+        let mut enc = zstd::Encoder::new(std::fs::File::create(&file).unwrap(), 1).unwrap();
+        std::io::Write::write_all(&mut enc, &[0xff; 4096]).unwrap();
+        enc.finish().unwrap();
+        assert!(load_cache(&info).is_none());
+        std::fs::write(&file, b"not even compressed").unwrap();
+        assert!(load_cache(&info).is_none());
+
+        // A cache for another commit is not used either.
+        save_cache(&info, &s).unwrap();
+        std::fs::write(tmp.path().join("more.txt"), "x\n").unwrap();
+        git(tmp.path(), "2026-03-13T09:00:00-06:00", &["add", "."]);
+        git(
+            tmp.path(),
+            "2026-03-13T09:00:00-06:00",
+            &["commit", "-q", "-m", "moved on"],
+        );
+        let moved = open(tmp.path(), None)
+            .unwrap()
+            .with_cache_dir(cache.path().to_owned());
+        assert!(load_cache(&moved).is_none());
+    }
+
+    #[test]
     fn days_follow_the_viewers_time_zone() {
         let tmp = fixture();
         let info = open(tmp.path(), None).unwrap();
@@ -1074,6 +1171,55 @@ mod tests {
         assert_eq!(only("src/a.rs"), (2, 1, 5, 1));
         assert_eq!(only("notes.md"), (1, 1, 1, 0));
         assert_eq!(only("missing/"), (0, 0, 0, 0));
+
+        // File lifecycle: the rename retires notes.md, the deletion retires logo.bin.
+        let health = query::file_health(&s, &w);
+        let alive_then: Vec<&str> = s
+            .ren_from
+            .iter()
+            .map(|r| s.paths[r.1 as usize].as_str())
+            .collect();
+        assert_eq!(alive_then, ["notes.md"], "rename source is recorded");
+        assert_eq!(health.alive, 2, "src/a.rs and README.md");
+        assert_eq!(health.staleness.iter().sum::<u32>(), 2);
+        let mut added: Vec<&str> = health
+            .new_files
+            .iter()
+            .map(|n| s.paths[n.0 as usize].as_str())
+            .collect();
+        added.sort();
+        assert_eq!(added, ["logo.bin", "notes.md", "src/a.rs"]);
+
+        // Second-pass extras: who renamed, deleted and added what, and the stream.
+        let all = query::summarize(&s, &clock, &w, bounds, &Filter::default(), "", 100);
+        let extras = query::extras(&s, &w, &Filter::default(), &all, 15);
+        let names = |rows: &[query::FileEvents]| {
+            rows.iter()
+                .map(|r| (s.paths[r.0 as usize].as_str(), r.1))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(names(&extras.top_renamed), [("README.md", 1)]);
+        assert_eq!(names(&extras.top_deleted), [("logo.bin", 1)]);
+        assert_eq!(extras.top_added.len(), 3);
+        assert_eq!(extras.stream.len(), 1);
+        assert_eq!(
+            extras.stream[0].1.iter().sum::<u32>(),
+            5,
+            "every commit lands in the stream"
+        );
+        assert_eq!(
+            extras.attributed.iter().map(|a| a.1).sum::<u64>(),
+            4,
+            "the merge has no files to attribute"
+        );
+        assert!(
+            query::is_vendored("vendor/x.rb")
+                && query::is_vendored("a/third_party/y.c")
+                && !query::is_vendored("src/vendors.rs")
+        );
+        assert!(
+            query::is_generated("api/generated/types.ts") && !query::is_generated("src/gene.rs")
+        );
 
         // Searching by local date finds what the user sees on that date.
         let clock = Clock::named("America/Denver").unwrap();

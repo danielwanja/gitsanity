@@ -261,6 +261,9 @@ pub struct DiffChunk {
     /// End offset of each path in `arena`.
     pub path_ends: Vec<u32>,
     pub arena: Vec<u8>,
+    /// For each rename: (index of the change, start..end of the old path in `ren_arena`).
+    pub ren_from: Vec<(u32, u32, u32)>,
+    pub ren_arena: Vec<u8>,
 }
 
 impl DiffChunk {
@@ -442,6 +445,7 @@ impl Differ<'_> {
             }
         }
         let mut drop = Vec::new();
+        let mut pairs = Vec::new();
         for i in from..n {
             if out.kinds[i] == KIND_ADD
                 && let Some(d) = deleted.remove(&out.new[i])
@@ -449,12 +453,23 @@ impl Differ<'_> {
                 out.kinds[i] = KIND_REN;
                 out.old[i] = out.new[i];
                 drop.push(d);
+                pairs.push((i, d));
             }
         }
         if drop.is_empty() {
             return;
         }
         drop.sort_unstable();
+        // Remember where each renamed file came from; the old path's deletion
+        // row is about to go, and file-lifecycle queries need to know it is gone.
+        for (i, d) in pairs {
+            let kept = i - drop.partition_point(|x| *x < i);
+            let source = out.path(d).to_vec();
+            let start = out.ren_arena.len() as u32;
+            out.ren_arena.extend_from_slice(&source);
+            out.ren_from
+                .push((kept as u32, start, out.ren_arena.len() as u32));
+        }
         // Rebuild the tail without the dropped deletions.
         let mut arena = Vec::new();
         let mut ends = Vec::new();

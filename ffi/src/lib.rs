@@ -16,6 +16,8 @@ use gitsanity::query::{self, Filter};
 use gitsanity::store::{self, COMMIT_TYPES, RefKind, RepoInfo, Stage, Store};
 use gitsanity::time::{Bounds, Bucket, Buckets, Clock, Preset, Window};
 
+mod extras;
+
 uniffi::setup_scaffolding!();
 
 #[derive(Debug, uniffi::Error)]
@@ -380,7 +382,7 @@ fn file_stat(store: &Store, f: &query::FileRow) -> FileStat {
     }
 }
 
-fn named(rows: &[query::NamedRow], limit: usize) -> Vec<NamedValue> {
+pub(crate) fn named(rows: &[query::NamedRow], limit: usize) -> Vec<NamedValue> {
     rows.iter()
         .take(limit)
         .map(|r| NamedValue {
@@ -422,7 +424,7 @@ impl Repo {
 
     /// The engine-side summary for a query, computed once and reused by the
     /// paging calls that follow it.
-    fn summarized(&self, q: &Query) -> Res<(Arc<Store>, Arc<query::Summary>, Window)> {
+    pub(crate) fn summarized(&self, q: &Query) -> Res<(Arc<Store>, Arc<query::Summary>, Window)> {
         let store = self.loaded()?;
         let key = format!(
             "{:p}/{:?}/{}/{}/{}/{:?}/{:?}/{}/{}/{:?}/{}",
