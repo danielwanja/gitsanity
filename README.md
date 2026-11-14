@@ -111,7 +111,7 @@ in GitHub Actions ([`release.yml`](.github/workflows/release.yml)). Bump the
 version in `Cargo.toml`, commit, then push a matching tag:
 
 ```bash
-git tag v2.0.0-alpha.1 && git push origin v2.0.0-alpha.1
+git tag v2.0.0-alpha.2 && git push origin v2.0.0-alpha.2
 ```
 
 That publishes the GitHub Release and updates the formula in
