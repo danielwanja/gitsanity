@@ -5,6 +5,7 @@
 
 pub mod git;
 pub mod graph;
+pub mod insight;
 pub mod query;
 pub mod store;
 pub mod time;

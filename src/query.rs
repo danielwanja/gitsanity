@@ -13,10 +13,20 @@ pub struct Filter {
     pub author: Option<u32>,
     /// One file (`src/a.rs`) or everything under a directory (`src/`).
     pub path: Option<String>,
+    /// Only these commits (by index): a release range, which is a set of
+    /// commits by ancestry rather than a span of time.
+    pub commits: Option<std::sync::Arc<Vec<bool>>>,
+}
+
+impl Filter {
+    /// True when commit `i`, written by `author`, is filtered out.
+    pub fn skips(&self, i: usize, author: u32) -> bool {
+        self.author.is_some_and(|a| a != author) || self.commits.as_ref().is_some_and(|set| !set[i])
+    }
 }
 
 /// For a path filter, which files it selects.
-fn file_mask(store: &Store, filter: &Filter) -> Option<Vec<bool>> {
+pub(crate) fn file_mask(store: &Store, filter: &Filter) -> Option<Vec<bool>> {
     let path = filter.path.as_deref()?;
     let dir = path.ends_with('/');
     Some(
@@ -30,7 +40,7 @@ fn file_mask(store: &Store, filter: &Filter) -> Option<Vec<bool>> {
 
 /// Lines a commit added and removed, counting only files the mask selects.
 /// None when the mask leaves the commit with nothing.
-fn commit_lines(store: &Store, i: usize, mask: Option<&[bool]>) -> Option<(u64, u64)> {
+pub(crate) fn commit_lines(store: &Store, i: usize, mask: Option<&[bool]>) -> Option<(u64, u64)> {
     let Some(mask) = mask else {
         return Some((u64::from(store.c_add[i]), u64::from(store.c_del[i])));
     };
@@ -139,7 +149,7 @@ fn totals(store: &Store, w: &Window, filter: &Filter) -> Totals {
     let mut author_seen = vec![false; store.people.len()];
     let mut file_seen = vec![false; store.paths.len()];
     for i in range {
-        if filter.author.is_some_and(|a| a != store.author[i]) {
+        if filter.skips(i, store.author[i]) {
             continue;
         }
         let Some((added, removed)) = commit_lines(store, i, mask.as_deref()) else {
@@ -164,7 +174,7 @@ fn totals(store: &Store, w: &Window, filter: &Filter) -> Totals {
 }
 
 /// Group key for the directory table: the first two path components.
-fn dir_group(dir: &str) -> &str {
+pub(crate) fn dir_group(dir: &str) -> &str {
     match dir.match_indices('/').nth(1) {
         Some((i, _)) => &dir[..i],
         None => dir,
@@ -232,7 +242,7 @@ pub fn summarize_with(
 
     for i in range {
         let author = store.author[i];
-        if filter.author.is_some_and(|a| a != author) {
+        if filter.skips(i, author) {
             continue;
         }
         let t = store.time[i];
@@ -504,9 +514,7 @@ pub fn extras(
 
     for i in store.range(w.start, w.end) {
         let author = store.author[i];
-        if filter.author.is_some_and(|a| a != author)
-            || commit_lines(store, i, mask.as_deref()).is_none()
-        {
+        if filter.skips(i, author) || commit_lines(store, i, mask.as_deref()).is_none() {
             continue;
         }
         while bucket + 1 < nb && store.time[i] >= s.buckets.edges[bucket + 1] {

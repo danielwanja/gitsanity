@@ -1218,6 +1218,7 @@ mod tests {
             let filter = Filter {
                 author: None,
                 path: Some(path.to_owned()),
+                ..Default::default()
             };
             let sum = query::summarize(&s, &clock, &w, bounds, &filter, "", 100);
             (

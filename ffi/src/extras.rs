@@ -73,7 +73,7 @@ impl Repo {
         let extras = query::extras(
             &store,
             &window,
-            &Self::filter(&query),
+            &self.filter(&store, &query)?,
             &summary,
             stream_size as usize,
         );

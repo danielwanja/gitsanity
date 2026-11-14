@@ -339,6 +339,7 @@ impl App {
         let filter = Filter {
             author: Some(id),
             path: self.filter.path.clone(),
+            ..Default::default()
         };
         let detail = query::summarize(store, &self.clock, w, self.bounds, &filter, "", chart_width);
         self.detail = Some((id, detail));

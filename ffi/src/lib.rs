@@ -17,6 +17,7 @@ use gitsanity::store::{self, COMMIT_TYPES, RefKind, RepoInfo, Stage, Store};
 use gitsanity::time::{Bounds, Bucket, Buckets, Clock, Preset, Window};
 
 mod extras;
+mod insight;
 
 uniffi::setup_scaffolding!();
 
@@ -106,6 +107,11 @@ pub struct Query {
     pub bucket: Option<String>,
     /// IANA zone such as `America/Denver`.
     pub time_zone: String,
+    /// A release instead of a span of time: the commits reachable from
+    /// `release_tip` and not from `release_base` (commit indices from
+    /// [`Repo::releases`]). With a tip set, the days above are ignored.
+    pub release_base: Option<u32>,
+    pub release_tip: Option<u32>,
 }
 
 #[derive(uniffi::Record, Clone, Copy)]
@@ -282,6 +288,19 @@ pub struct Repo {
     pub(crate) store: RwLock<Option<Arc<Store>>>,
     cached: Mutex<Option<Cached>>,
     graph: Mutex<Option<Graph>>,
+    /// The commits of the release last asked for.
+    release: Mutex<Option<ReleaseSet>>,
+    pub(crate) owned: Mutex<Option<(String, Arc<gitsanity::insight::Ownership>)>>,
+}
+
+/// The commits of a release, and the author times of its oldest and newest.
+type ReleaseCommits = (Arc<Vec<bool>>, (i64, i64));
+
+struct ReleaseSet {
+    key: String,
+    commits: Arc<Vec<bool>>,
+    /// Author times of its oldest and newest commit.
+    span: (i64, i64),
 }
 
 fn now() -> i64 {
@@ -291,7 +310,7 @@ fn now() -> i64 {
         .unwrap_or(0)
 }
 
-fn hex(bytes: &[u8]) -> String {
+pub(crate) fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
@@ -408,18 +427,62 @@ impl Repo {
             .ok_or_else(|| failed("nothing loaded yet"))
     }
 
-    pub(crate) fn frame(&self, store: &Store, q: &Query) -> Res<(Clock, Bounds, Window)> {
+    pub(crate) fn frame(&self, store: &Arc<Store>, q: &Query) -> Res<(Clock, Bounds, Window)> {
         let clock = Clock::named(&q.time_zone).map_err(failed)?;
         let bounds = query::bounds(store, &clock, now());
-        let window = Window::of(&clock, preset(&q.preset)?, q.first_day, q.last_day);
+        let window = match self.release_set(store, q)? {
+            // A release covers the days from its oldest to its newest commit.
+            Some((_, (oldest, newest))) => {
+                Window::of(&clock, Preset::All, clock.day(oldest), clock.day(newest))
+            }
+            None => Window::of(&clock, preset(&q.preset)?, q.first_day, q.last_day),
+        };
         Ok((clock, bounds, window))
     }
 
-    pub(crate) fn filter(q: &Query) -> Filter {
-        Filter {
+    pub(crate) fn filter(&self, store: &Arc<Store>, q: &Query) -> Res<Filter> {
+        Ok(Filter {
             author: q.author,
             path: q.path.clone(),
+            commits: self.release_set(store, q)?.map(|r| r.0),
+        })
+    }
+
+    /// The commits of the query's release and the time they span, if it asks for one.
+    fn release_set(&self, store: &Arc<Store>, q: &Query) -> Res<Option<ReleaseCommits>> {
+        let Some(tip) = q.release_tip else {
+            return Ok(None);
+        };
+        let in_store = |i: u32| (i as usize) < store.len();
+        if !in_store(tip) || q.release_base.is_some_and(|b| !in_store(b)) {
+            return Err(failed("that release is not part of this history"));
         }
+        let key = format!("{:p}/{:?}/{tip}", Arc::as_ptr(store), q.release_base);
+        let mut cached = self.release.lock().expect("poisoned");
+        if let Some(r) = cached.as_ref().filter(|r| r.key == key) {
+            return Ok(Some((r.commits.clone(), r.span)));
+        }
+        let commits =
+            gitsanity::insight::between(store, q.release_base.map(|b| b as usize), tip as usize);
+        let times = || {
+            commits
+                .iter()
+                .zip(&store.time)
+                .filter(|(inside, _)| **inside)
+                .map(|(_, t)| *t)
+        };
+        let tip_time = store.time[tip as usize];
+        let span = (
+            times().min().unwrap_or(tip_time),
+            times().max().unwrap_or(tip_time),
+        );
+        let commits = Arc::new(commits);
+        *cached = Some(ReleaseSet {
+            key,
+            commits: commits.clone(),
+            span,
+        });
+        Ok(Some((commits, span)))
     }
 
     /// The engine-side summary for a query, computed once and reused by the
@@ -427,7 +490,7 @@ impl Repo {
     pub(crate) fn summarized(&self, q: &Query) -> Res<(Arc<Store>, Arc<query::Summary>, Window)> {
         let store = self.loaded()?;
         let key = format!(
-            "{:p}/{:?}/{}/{}/{}/{:?}/{:?}/{}/{}/{:?}/{}",
+            "{:p}/{:?}/{}/{}/{}/{:?}/{:?}/{}/{}/{:?}/{}/{:?}/{:?}",
             Arc::as_ptr(&store),
             store.stage,
             q.preset,
@@ -438,7 +501,9 @@ impl Repo {
             q.search,
             q.max_buckets,
             q.bucket,
-            q.time_zone
+            q.time_zone,
+            q.release_base,
+            q.release_tip
         );
         let mut cached = self.cached.lock().expect("poisoned");
         if let Some(c) = cached.as_ref().filter(|c| c.key == key) {
@@ -454,7 +519,7 @@ impl Repo {
             &clock,
             &window,
             bounds,
-            &Self::filter(q),
+            &self.filter(&store, q)?,
             &q.search,
             buckets,
         ));
@@ -488,6 +553,8 @@ impl Repo {
             store: RwLock::new(None),
             cached: Mutex::new(None),
             graph: Mutex::new(None),
+            release: Mutex::new(None),
+            owned: Mutex::new(None),
         }))
     }
 
